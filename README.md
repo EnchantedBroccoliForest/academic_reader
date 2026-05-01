@@ -8,19 +8,34 @@ This project was 90% vibe coded just to illustrate how one can very easily [read
 
 ## Usage
 
-The project uses [uv](https://docs.astral.sh/uv/). So for example, download [Dracula EPUB3](https://www.gutenberg.org/ebooks/345) to this directory as `dracula.epub`, then:
+The project uses [uv](https://docs.astral.sh/uv/). Import a paper or book with the unified `import.py` CLI:
 
 ```bash
-uv run reader3.py dracula.epub
+uv run import.py dracula.epub                 # EPUB
+uv run import.py path/to/paper.pdf            # PDF (via pymupdf4llm)
+uv run import.py arxiv:1706.03762             # arXiv (prefers ar5iv HTML)
+uv run import.py https://arxiv.org/abs/1706.03762
+uv run import.py https://example.com/post.html
 ```
 
-This creates the directory `dracula_data`, which registers the book to your local library. We can then run the server:
+Each call creates a `*_data` folder that registers the book to your local library. Then run the server:
 
 ```bash
 uv run server.py
 ```
 
-And visit [localhost:8123](http://localhost:8123/) to see your current Library. You can easily add more books, or delete them from your library by deleting the folder. It's not supposed to be complicated or complex.
+Visit [localhost:8123](http://localhost:8123/) for your library. The reader splits documents into sections at every H1/H2/H3 so the TOC actually navigates, math is rendered with KaTeX, and you can grab a section as markdown for your LLM with one keystroke. Press `?` in the reader for the full shortcut list; the essentials:
+
+| key | action |
+| --- | --- |
+| `j` / `k` | next / previous section |
+| `c`       | copy current section as markdown (with provenance header) |
+| `C`       | copy entire paper |
+| `y`       | copy current selection (with provenance header) |
+| `g`       | fuzzy "go to section…" palette |
+| `?`       | shortcut help |
+
+Set `READER3_LIBRARY=~/papers` to point the server at a different library directory. Delete a book by removing its `*_data/` folder.
 
 ## License
 

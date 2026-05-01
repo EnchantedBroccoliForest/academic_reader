@@ -12,3 +12,5 @@ wheels/
 # Custom
 *_data/
 *.epub
+*.pdf
+.pytest_cache/
