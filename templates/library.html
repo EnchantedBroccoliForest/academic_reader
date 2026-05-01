@@ -4,67 +4,114 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>reader3 — Library</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f4f9; margin: 0; padding: 40px; color: #212529; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        h1 { color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px; margin-bottom: 8px; }
-        .subtitle { color: #666; margin-bottom: 30px; font-size: 0.9em; }
-        .book-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 18px; }
-        .book-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; flex-direction: column; }
-        .book-title { font-size: 1.05em; font-weight: 600; color: #2c3e50; margin-bottom: 8px; line-height: 1.3; }
-        .book-meta { color: #666; font-size: 0.85em; margin-bottom: 6px; }
-        .book-meta a { color: #3498db; text-decoration: none; }
-        .book-source-tag { display: inline-block; font-size: 0.7em; color: #888; background: #f4f4f9; padding: 2px 6px; border-radius: 3px; margin-bottom: 12px; }
-        .last-opened { font-size: 0.75em; color: #999; margin: 10px 0; }
-        .btn-row { margin-top: auto; display: flex; gap: 8px; }
-        .btn { display: inline-block; background: #3498db; color: white; text-decoration: none; padding: 6px 14px; border-radius: 4px; font-size: 0.85em; flex: 1; text-align: center; }
-        .btn:hover { background: #2980b9; }
-        .btn.secondary { background: #f4f4f9; color: #333; border: 1px solid #ddd; }
-        .empty { background: white; padding: 30px; border-radius: 8px; color: #666; }
-        code { background: #f4f4f9; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+    <link rel="stylesheet" href="/static/reader.css">
+    <script src="/static/theme.js"></script>
 </head>
-<body>
-    <div class="container">
-        <h1>Library</h1>
-        <div class="subtitle">{{ books | length }} item{% if books | length != 1 %}s{% endif %}</div>
+<body class="library-body">
 
-        {% if not books %}
-            <div class="empty">
-                <p>No books yet. Import one with:</p>
-                <p><code>uv run import.py path/to/paper.pdf</code></p>
-                <p><code>uv run import.py arxiv:1706.03762</code></p>
-                <p><code>uv run import.py path/to/book.epub</code></p>
+    <div class="library-container">
+        <header class="library-header">
+            <div class="library-brand">
+                <h1>Library</h1>
+                <span class="brand-tag">reader3</span>
+            </div>
+            <div class="library-subtitle">
+                {% if books %}
+                    {{ books | length }} item{% if books | length != 1 %}s{% endif %} ready to read
+                {% else %}
+                    A calm reader for papers and books, built for thinking with LLMs.
+                {% endif %}
+            </div>
+        </header>
+
+        {% if books %}
+            <div class="library-search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7"></circle>
+                    <path d="m21 21-4.3-4.3"></path>
+                </svg>
+                <input id="library-filter" type="text"
+                       placeholder="Filter by title or author..."
+                       aria-label="Filter library"
+                       autocomplete="off">
             </div>
         {% endif %}
 
-        <div class="book-grid">
+        {% if not books %}
+            <div class="empty">
+                <h2>Your library is empty</h2>
+                <p>Import your first paper, book, or article. Each item is split into sections you can read and copy as Markdown for an LLM.</p>
+                <div class="cmd-list">
+                    <div class="cmd">
+                        <span class="cmd-label">PDF</span>
+                        <span>python import.py path/to/paper.pdf</span>
+                    </div>
+                    <div class="cmd">
+                        <span class="cmd-label">arXiv</span>
+                        <span>python import.py arxiv:1706.03762</span>
+                    </div>
+                    <div class="cmd">
+                        <span class="cmd-label">EPUB</span>
+                        <span>python import.py path/to/book.epub</span>
+                    </div>
+                    <div class="cmd">
+                        <span class="cmd-label">URL</span>
+                        <span>python import.py https://example.com/article</span>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+
+        <div class="book-grid" id="book-grid">
             {% for book in books %}
-            <div class="book-card" data-book-id="{{ book.id }}">
-                <div class="book-title">{{ book.title }}</div>
+            <article class="book-card"
+                     data-book-id="{{ book.id }}"
+                     data-search="{{ (book.title ~ ' ' ~ (book.author or '')) | lower }}">
+                <h2 class="book-title">{{ book.title }}</h2>
                 {% if book.author %}
-                    <div class="book-meta">{{ book.author }}</div>
+                    <div class="book-author">{{ book.author }}</div>
                 {% endif %}
-                {% if book.arxiv_id %}
-                    <span class="book-source-tag">arXiv:{{ book.arxiv_id }}</span>
-                {% endif %}
-                <div class="book-meta">{{ book.sections }} section{% if book.sections != 1 %}s{% endif %}</div>
-                <div class="last-opened" data-last-opened-for="{{ book.id }}"></div>
+
+                <div class="book-tags">
+                    {% if book.arxiv_id %}
+                        <span class="book-tag is-arxiv">
+                            <a href="https://arxiv.org/abs/{{ book.arxiv_id }}" target="_blank" rel="noopener">
+                                arXiv:{{ book.arxiv_id }}
+                            </a>
+                        </span>
+                    {% endif %}
+                    <span class="book-tag">{{ book.sections }} section{% if book.sections != 1 %}s{% endif %}</span>
+                </div>
+
+                <div class="book-meta-row" data-last-opened-for="{{ book.id }}"></div>
+
                 <div class="btn-row">
                     {% if book.first_section_id %}
                         <a href="/read/{{ book.id }}/{{ book.first_section_id }}" class="btn">Read</a>
                     {% else %}
-                        <span class="btn" style="opacity: 0.5; pointer-events: none;">Empty</span>
+                        <span class="btn disabled">Empty</span>
                     {% endif %}
-                    <a href="#" class="btn secondary" data-continue-for="{{ book.id }}" style="display:none;">Continue</a>
+                    <a href="#" class="btn secondary"
+                       data-continue-for="{{ book.id }}"
+                       style="display:none;">Continue</a>
                 </div>
-            </div>
+            </article>
             {% endfor %}
+        </div>
+
+        <div id="no-results" class="no-results" style="display:none;">
+            No books match your filter.
         </div>
     </div>
 
     <script>
-      // Surface "Continue" + last-opened from localStorage (no DB).
+      // ---- "Continue" + last-opened from localStorage (no DB) ----
       function fmtAgo(ts) {
         const diff = Date.now() - ts;
         const mins = Math.floor(diff / 60000);
@@ -73,12 +120,17 @@
         const hrs = Math.floor(mins / 60);
         if (hrs < 24) return hrs + 'h ago';
         const days = Math.floor(hrs / 24);
-        return days + 'd ago';
+        if (days < 30) return days + 'd ago';
+        const months = Math.floor(days / 30);
+        return months + 'mo ago';
       }
       document.querySelectorAll('.book-card').forEach(card => {
         const id = card.getAttribute('data-book-id');
-        const lastSec = localStorage.getItem('reader3:' + id + ':lastSection');
-        const lastOpened = parseInt(localStorage.getItem('reader3:' + id + ':lastOpened') || '0', 10);
+        let lastSec = null, lastOpened = 0;
+        try {
+          lastSec = localStorage.getItem('reader3:' + id + ':lastSection');
+          lastOpened = parseInt(localStorage.getItem('reader3:' + id + ':lastOpened') || '0', 10);
+        } catch (_) {}
         const lastEl = card.querySelector('[data-last-opened-for="' + id + '"]');
         if (lastEl && lastOpened) lastEl.textContent = 'Last opened ' + fmtAgo(lastOpened);
         const cont = card.querySelector('[data-continue-for="' + id + '"]');
@@ -87,6 +139,23 @@
           cont.style.display = '';
         }
       });
+
+      // ---- Live filter ----
+      const filterInput = document.getElementById('library-filter');
+      const noResults = document.getElementById('no-results');
+      if (filterInput) {
+        filterInput.addEventListener('input', () => {
+          const q = filterInput.value.toLowerCase().trim();
+          let visible = 0;
+          document.querySelectorAll('.book-card').forEach(card => {
+            const hay = card.getAttribute('data-search') || '';
+            const match = !q || hay.includes(q);
+            card.classList.toggle('is-hidden', !match);
+            if (match) visible++;
+          });
+          if (noResults) noResults.style.display = visible === 0 ? '' : 'none';
+        });
+      }
     </script>
 </body>
 </html>
