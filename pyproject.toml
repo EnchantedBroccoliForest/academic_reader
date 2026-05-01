@@ -1,13 +1,24 @@
 [project]
 name = "reader3"
-version = "0.1.0"
-description = "Simple EPUB reader web app"
+version = "0.2.0"
+description = "Self-hosted reader for academic papers and EPUBs, optimized for LLM-assisted study."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "beautifulsoup4>=4.14.2",
     "ebooklib>=0.20",
     "fastapi>=0.121.2",
     "jinja2>=3.1.6",
     "uvicorn>=0.38.0",
+    "pymupdf4llm>=0.0.17",
+    "markdown>=3.6",
+    "markdownify>=0.13",
+    "readability-lxml>=0.8.1",
+    "httpx>=0.27",
+    "lxml>=5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
 ]
