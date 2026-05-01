@@ -1,303 +1,396 @@
 """
-Parses an EPUB file into a structured object that can be used to serve the book via a web interface.
+Core data model and section-splitting utilities for reader3.
+
+Importers (EPUB, PDF, HTML, arXiv) live in the ``importers/`` package and
+return a fully-assembled :class:`Book`. The ``import.py`` CLI dispatches
+to the right importer based on the source.
+
+For backward compatibility, ``uv run reader3.py <file.epub>`` still works
+and delegates to ``importers.epub.process_epub``.
 """
 
 import os
 import pickle
-import shutil
+import re
+import sys
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
 from datetime import datetime
-from urllib.parse import unquote
+from typing import Any, Dict, List, Optional, Tuple
 
-import ebooklib
-from ebooklib import epub
 from bs4 import BeautifulSoup, Comment
 
-# --- Data structures ---
+
+# ---------------------------------------------------------------------------
+# Data model (v4.0)
+# ---------------------------------------------------------------------------
+
 
 @dataclass
-class ChapterContent:
-    """
-    Represents a physical file in the EPUB (Spine Item).
-    A single file might contain multiple logical chapters (TOC entries).
-    """
-    id: str           # Internal ID (e.g., 'item_1')
-    href: str         # Filename (e.g., 'part01.html')
-    title: str        # Best guess title from file
-    content: str      # Cleaned HTML with rewritten image paths
-    text: str         # Plain text for search/LLM context
-    order: int        # Linear reading order
+class Section:
+    """A logical section of a document, split at H1/H2/H3 boundaries."""
+    id: str
+    level: int
+    title: str
+    parent_id: Optional[str]
+    html: str
+    text: str
+    order: int
+    source_file: str = ""
 
 
 @dataclass
 class TOCEntry:
-    """Represents a logical entry in the navigation sidebar."""
+    """Heading-derived TOC entry."""
     title: str
-    href: str         # original href (e.g., 'part01.html#chapter1')
-    file_href: str    # just the filename (e.g., 'part01.html')
-    anchor: str       # just the anchor (e.g., 'chapter1'), empty if none
-    children: List['TOCEntry'] = field(default_factory=list)
+    section_id: str = ""
+    level: int = 1
+    children: List["TOCEntry"] = field(default_factory=list)
+    # Vestigial back-compat fields so v3 pickles still unpickle cleanly.
+    href: str = ""
+    file_href: str = ""
+    anchor: str = ""
+
+
+@dataclass
+class Reference:
+    id: str
+    text: str
+    arxiv_id: Optional[str] = None
+    doi: Optional[str] = None
+    url: Optional[str] = None
+
+
+@dataclass
+class Figure:
+    id: str
+    number: str
+    caption: str
+    src: Optional[str]
+    section_id: str
 
 
 @dataclass
 class BookMetadata:
-    """Metadata"""
     title: str
-    language: str
+    language: str = "en"
     authors: List[str] = field(default_factory=list)
     description: Optional[str] = None
     publisher: Optional[str] = None
     date: Optional[str] = None
     identifiers: List[str] = field(default_factory=list)
     subjects: List[str] = field(default_factory=list)
+    arxiv_id: Optional[str] = None
+    doi: Optional[str] = None
+    abstract: Optional[str] = None
+
+
+@dataclass
+class ChapterContent:
+    """Vestigial; kept so v3.0 pickles continue to unpickle."""
+    id: str = ""
+    href: str = ""
+    title: str = ""
+    content: str = ""
+    text: str = ""
+    order: int = 0
 
 
 @dataclass
 class Book:
-    """The Master Object to be pickled."""
     metadata: BookMetadata
-    spine: List[ChapterContent]  # The actual content (linear files)
-    toc: List[TOCEntry]          # The navigation tree
-    images: Dict[str, str]       # Map: original_path -> local_path
+    sections: List[Section] = field(default_factory=list)
+    toc: List[TOCEntry] = field(default_factory=list)
+    images: Dict[str, str] = field(default_factory=dict)
+    references: Dict[str, Reference] = field(default_factory=dict)
+    figures: List[Figure] = field(default_factory=list)
+    tables: List[Figure] = field(default_factory=list)
+    source_file: str = ""
+    processed_at: str = ""
+    version: str = "4.0"
 
-    # Meta info
-    source_file: str
-    processed_at: str
-    version: str = "3.0"
+    def __getattr__(self, name):
+        # ``book.spine`` keeps working for any caller that hasn't migrated.
+        # __getattr__ runs only when normal lookup misses.
+        if name == "spine":
+            return self.__dict__.get("sections", [])
+        raise AttributeError(name)
 
 
-# --- Utilities ---
+# ---------------------------------------------------------------------------
+# HTML utilities (shared across importers)
+# ---------------------------------------------------------------------------
+
 
 def clean_html_content(soup: BeautifulSoup) -> BeautifulSoup:
-
-    # Remove dangerous/useless tags
+    """Strip dangerous/useless tags. Leaves <math> intact for KaTeX/MathML."""
     for tag in soup(['script', 'style', 'iframe', 'video', 'nav', 'form', 'button']):
         tag.decompose()
-
-    # Remove HTML comments
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
-
-    # Remove input tags
     for tag in soup.find_all('input'):
         tag.decompose()
-
     return soup
 
 
-def extract_plain_text(soup: BeautifulSoup) -> str:
-    """Extract clean text for LLM/Search usage."""
+def extract_plain_text(soup_or_html) -> str:
+    if isinstance(soup_or_html, str):
+        soup = BeautifulSoup(soup_or_html, 'html.parser')
+    else:
+        soup = soup_or_html
     text = soup.get_text(separator=' ')
-    # Collapse whitespace
     return ' '.join(text.split())
 
 
-def parse_toc_recursive(toc_list, depth=0) -> List[TOCEntry]:
+# ---------------------------------------------------------------------------
+# Section splitter
+# ---------------------------------------------------------------------------
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(text: str, max_len: int = 60) -> str:
+    s = _SLUG_RE.sub("-", (text or "").lower()).strip("-")
+    if len(s) > max_len:
+        s = s[:max_len].rstrip("-")
+    return s or "section"
+
+
+def _make_unique_id(title: str, used: set) -> str:
+    base = slugify(title)
+    sid = base
+    i = 2
+    while sid in used:
+        sid = f"{base}-{i}"
+        i += 1
+    used.add(sid)
+    return sid
+
+
+def split_html_into_sections(
+    html: str,
+    source_file: str,
+    fallback_title: str,
+    start_order: int,
+    used_ids: set,
+) -> List[Section]:
+    """Split one HTML document into Sections at every h1/h2/h3.
+
+    The heading element is given an ``id`` attribute matching the resulting
+    Section.id so anchor links and #fragment scrolling work after pages are
+    rendered individually.
     """
-    Recursively parses the TOC structure from ebooklib.
-    """
-    result = []
+    soup = BeautifulSoup(html or "", "html.parser")
+    body = soup.find("body") or soup
 
-    for item in toc_list:
-        # ebooklib TOC items are either `Link` objects or tuples (Section, [Children])
-        if isinstance(item, tuple):
-            section, children = item
-            entry = TOCEntry(
-                title=section.title,
-                href=section.href,
-                file_href=section.href.split('#')[0],
-                anchor=section.href.split('#')[1] if '#' in section.href else "",
-                children=parse_toc_recursive(children, depth + 1)
-            )
-            result.append(entry)
-        elif isinstance(item, epub.Link):
-            entry = TOCEntry(
-                title=item.title,
-                href=item.href,
-                file_href=item.href.split('#')[0],
-                anchor=item.href.split('#')[1] if '#' in item.href else ""
-            )
-            result.append(entry)
-        # Note: ebooklib sometimes returns direct Section objects without children
-        elif isinstance(item, epub.Section):
-             entry = TOCEntry(
-                title=item.title,
-                href=item.href,
-                file_href=item.href.split('#')[0],
-                anchor=item.href.split('#')[1] if '#' in item.href else ""
-            )
-             result.append(entry)
+    # Unwrap single-child wrappers (<article>, <div>, <main>, ...) so headings
+    # become direct children of the iteration root. Stop as soon as the root
+    # has either headings as direct children or multiple element children.
+    def _has_top_level_heading(node) -> bool:
+        for c in getattr(node, "children", []):
+            if getattr(c, "name", None) in ("h1", "h2", "h3"):
+                return True
+        return False
 
-    return result
-
-
-def get_fallback_toc(book_obj) -> List[TOCEntry]:
-    """
-    If TOC is missing, build a flat one from the Spine.
-    """
-    toc = []
-    for item in book_obj.get_items():
-        if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            name = item.get_name()
-            # Try to guess a title from the content or ID
-            title = item.get_name().replace('.html', '').replace('.xhtml', '').replace('_', ' ').title()
-            toc.append(TOCEntry(title=title, href=name, file_href=name, anchor=""))
-    return toc
-
-
-def extract_metadata_robust(book_obj) -> BookMetadata:
-    """
-    Extracts metadata handling both single and list values.
-    """
-    def get_list(key):
-        data = book_obj.get_metadata('DC', key)
-        return [x[0] for x in data] if data else []
-
-    def get_one(key):
-        data = book_obj.get_metadata('DC', key)
-        return data[0][0] if data else None
-
-    return BookMetadata(
-        title=get_one('title') or "Untitled",
-        language=get_one('language') or "en",
-        authors=get_list('creator'),
-        description=get_one('description'),
-        publisher=get_one('publisher'),
-        date=get_one('date'),
-        identifiers=get_list('identifier'),
-        subjects=get_list('subject')
-    )
-
-
-# --- Main Conversion Logic ---
-
-def process_epub(epub_path: str, output_dir: str) -> Book:
-
-    # 1. Load Book
-    print(f"Loading {epub_path}...")
-    book = epub.read_epub(epub_path)
-
-    # 2. Extract Metadata
-    metadata = extract_metadata_robust(book)
-
-    # 3. Prepare Output Directories
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
-    images_dir = os.path.join(output_dir, 'images')
-    os.makedirs(images_dir, exist_ok=True)
-
-    # 4. Extract Images & Build Map
-    print("Extracting images...")
-    image_map = {} # Key: internal_path, Value: local_relative_path
-
-    for item in book.get_items():
-        if item.get_type() == ebooklib.ITEM_IMAGE:
-            # Normalize filename
-            original_fname = os.path.basename(item.get_name())
-            # Sanitize filename for OS
-            safe_fname = "".join([c for c in original_fname if c.isalpha() or c.isdigit() or c in '._-']).strip()
-
-            # Save to disk
-            local_path = os.path.join(images_dir, safe_fname)
-            with open(local_path, 'wb') as f:
-                f.write(item.get_content())
-
-            # Map keys: We try both the full internal path and just the basename
-            # to be robust against messy HTML src attributes
-            rel_path = f"images/{safe_fname}"
-            image_map[item.get_name()] = rel_path
-            image_map[original_fname] = rel_path
-
-    # 5. Process TOC
-    print("Parsing Table of Contents...")
-    toc_structure = parse_toc_recursive(book.toc)
-    if not toc_structure:
-        print("Warning: Empty TOC, building fallback from Spine...")
-        toc_structure = get_fallback_toc(book)
-
-    # 6. Process Content (Spine-based to preserve HTML validity)
-    print("Processing chapters...")
-    spine_chapters = []
-
-    # We iterate over the spine (linear reading order)
-    for i, spine_item in enumerate(book.spine):
-        item_id, linear = spine_item
-        item = book.get_item_with_id(item_id)
-
-        if not item:
+    while True:
+        element_kids = [c for c in body.children if getattr(c, "name", None)]
+        if _has_top_level_heading(body):
+            break
+        if len(element_kids) == 1 and element_kids[0].name in (
+            "article", "main", "section", "div", "body"
+        ):
+            body = element_kids[0]
             continue
+        break
 
-        if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            # Raw content
-            raw_content = item.get_content().decode('utf-8', errors='ignore')
-            soup = BeautifulSoup(raw_content, 'html.parser')
+    sections: List[Section] = []
+    parent_stack: List[Tuple[int, str]] = []
+    current_title = fallback_title
+    current_level = 1
+    current_id: Optional[str] = None
+    current_buffer: List[Any] = []
+    has_seen_heading = False
 
-            # A. Fix Images
-            for img in soup.find_all('img'):
-                src = img.get('src', '')
-                if not src: continue
+    def flush():
+        nonlocal current_id
+        html_parts = [str(elem) for elem in current_buffer]
+        section_html = "".join(html_parts).strip()
+        if not section_html:
+            return
+        sid = current_id or _make_unique_id(current_title, used_ids)
+        parent_id = None
+        for lvl, pid in reversed(parent_stack):
+            if lvl < current_level:
+                parent_id = pid
+                break
+        plain = extract_plain_text(BeautifulSoup(section_html, "html.parser"))
+        sec = Section(
+            id=sid,
+            level=current_level,
+            title=current_title,
+            parent_id=parent_id,
+            html=section_html,
+            text=plain,
+            order=start_order + len(sections),
+            source_file=source_file,
+        )
+        sections.append(sec)
+        while parent_stack and parent_stack[-1][0] >= current_level:
+            parent_stack.pop()
+        parent_stack.append((current_level, sid))
 
-                # Decode URL (part01/image%201.jpg -> part01/image 1.jpg)
-                src_decoded = unquote(src)
-                filename = os.path.basename(src_decoded)
+    for child in list(body.children):
+        if getattr(child, "name", None) in ("h1", "h2", "h3"):
+            if has_seen_heading or current_buffer:
+                flush()
+            heading_text = child.get_text(strip=True) or fallback_title
+            current_title = heading_text
+            current_level = int(child.name[1])
+            current_id = _make_unique_id(heading_text, used_ids)
+            child["id"] = current_id
+            current_buffer = [child]
+            has_seen_heading = True
+        else:
+            current_buffer.append(child)
 
-                # Try to find in map
-                if src_decoded in image_map:
-                    img['src'] = image_map[src_decoded]
-                elif filename in image_map:
-                    img['src'] = image_map[filename]
+    flush()
 
-            # B. Clean HTML
-            soup = clean_html_content(soup)
-
-            # C. Extract Body Content only
-            body = soup.find('body')
-            if body:
-                # Extract inner HTML of body
-                final_html = "".join([str(x) for x in body.contents])
-            else:
-                final_html = str(soup)
-
-            # D. Create Object
-            chapter = ChapterContent(
-                id=item_id,
-                href=item.get_name(), # Important: This links TOC to Content
-                title=f"Section {i+1}", # Fallback, real titles come from TOC
-                content=final_html,
-                text=extract_plain_text(soup),
-                order=i
+    # No headings at all: emit the whole document as a single section.
+    if not sections and (html or "").strip():
+        sid = _make_unique_id(fallback_title, used_ids)
+        plain = extract_plain_text(soup)
+        sections.append(
+            Section(
+                id=sid,
+                level=1,
+                title=fallback_title,
+                parent_id=None,
+                html=("".join(str(c) for c in body.contents) if hasattr(body, "contents") else str(body)),
+                text=plain,
+                order=start_order,
+                source_file=source_file,
             )
-            spine_chapters.append(chapter)
+        )
 
-    # 7. Final Assembly
-    final_book = Book(
+    return sections
+
+
+def build_toc_from_sections(sections: List[Section]) -> List[TOCEntry]:
+    root: List[TOCEntry] = []
+    stack: List[Tuple[int, TOCEntry]] = []
+    for sec in sections:
+        entry = TOCEntry(title=sec.title, section_id=sec.id, level=sec.level)
+        while stack and stack[-1][0] >= sec.level:
+            stack.pop()
+        if stack:
+            stack[-1][1].children.append(entry)
+        else:
+            root.append(entry)
+        stack.append((sec.level, entry))
+    return root
+
+
+def split_inputs_into_sections(
+    raw_inputs: List[Tuple[str, str, str]],
+) -> Tuple[List[Section], List[TOCEntry]]:
+    """``raw_inputs``: list of (source_file, fallback_title, html) tuples."""
+    used: set = set()
+    all_sections: List[Section] = []
+    for source_file, fallback_title, html in raw_inputs:
+        chunk = split_html_into_sections(
+            html=html,
+            source_file=source_file,
+            fallback_title=(fallback_title
+                            or (os.path.basename(source_file) if source_file else "Section")),
+            start_order=len(all_sections),
+            used_ids=used,
+        )
+        all_sections.extend(chunk)
+    # Reassign linear order to be safe.
+    for i, sec in enumerate(all_sections):
+        sec.order = i
+    toc = build_toc_from_sections(all_sections)
+    return all_sections, toc
+
+
+# ---------------------------------------------------------------------------
+# Migration from v3 (chapter-based) pickles
+# ---------------------------------------------------------------------------
+
+
+def migrate_book(book) -> "Book":
+    version = getattr(book, "version", "") or ""
+    has_sections = "sections" in getattr(book, "__dict__", {})
+    if has_sections and version.startswith("4."):
+        return book
+
+    old_spine = getattr(book, "__dict__", {}).get("spine") or []
+    raw: List[Tuple[str, str, str]] = []
+    for ch in old_spine:
+        title = (getattr(ch, "title", "")
+                 or os.path.basename(getattr(ch, "href", ""))
+                 or "Section")
+        raw.append((getattr(ch, "href", ""), title, getattr(ch, "content", "") or ""))
+    sections, toc = split_inputs_into_sections(raw) if raw else ([], [])
+
+    metadata = getattr(book, "metadata", None)
+    if metadata is None:
+        metadata = BookMetadata(title="Untitled")
+
+    new_book = Book(
         metadata=metadata,
-        spine=spine_chapters,
-        toc=toc_structure,
-        images=image_map,
-        source_file=os.path.basename(epub_path),
-        processed_at=datetime.now().isoformat()
+        sections=sections,
+        toc=toc,
+        images=getattr(book, "__dict__", {}).get("images") or {},
+        source_file=getattr(book, "__dict__", {}).get("source_file", ""),
+        processed_at=getattr(book, "__dict__", {}).get("processed_at", ""),
+        references=getattr(book, "__dict__", {}).get("references") or {},
+        figures=getattr(book, "__dict__", {}).get("figures") or [],
+        tables=getattr(book, "__dict__", {}).get("tables") or [],
+        version="4.0",
     )
+    return new_book
 
-    return final_book
+
+# ---------------------------------------------------------------------------
+# I/O
+# ---------------------------------------------------------------------------
 
 
-def save_to_pickle(book: Book, output_dir: str):
-    p_path = os.path.join(output_dir, 'book.pkl')
-    with open(p_path, 'wb') as f:
+def save_to_pickle(book: Book, output_dir: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    p_path = os.path.join(output_dir, "book.pkl")
+    with open(p_path, "wb") as f:
         pickle.dump(book, f)
     print(f"Saved structured data to {p_path}")
+    return p_path
 
 
-# --- CLI ---
+def load_book(folder_name: str) -> Optional[Book]:
+    file_path = os.path.join(folder_name, "book.pkl")
+    if not os.path.exists(file_path):
+        return None
+    try:
+        with open(file_path, "rb") as f:
+            book = pickle.load(f)
+        return migrate_book(book)
+    except Exception as e:
+        print(f"Error loading book {folder_name}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CLI: EPUB pass-through (kept for back-compat)
+# ---------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
-
-    import sys
     if len(sys.argv) < 2:
-        print("Usage: python reader3.py <file.epub>")
+        print("Usage: uv run reader3.py <file.epub>")
+        print("       (for PDFs/arXiv/URLs use: uv run import.py <source>)")
         sys.exit(1)
+
+    from importers.epub import process_epub  # local import keeps reader3.py importable without ebooklib
 
     epub_file = sys.argv[1]
     assert os.path.exists(epub_file), "File not found."
@@ -308,6 +401,6 @@ if __name__ == "__main__":
     print("\n--- Summary ---")
     print(f"Title: {book_obj.metadata.title}")
     print(f"Authors: {', '.join(book_obj.metadata.authors)}")
-    print(f"Physical Files (Spine): {len(book_obj.spine)}")
+    print(f"Sections: {len(book_obj.sections)}")
     print(f"TOC Root Items: {len(book_obj.toc)}")
     print(f"Images extracted: {len(book_obj.images)}")
