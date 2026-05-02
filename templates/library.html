@@ -46,7 +46,7 @@
         {% if not books %}
             <div class="empty">
                 <h2>Your library is empty</h2>
-                <p>Import your first paper, book, or article. Each item is split into sections you can read and copy as Markdown for an LLM.</p>
+                <p>Drag a PDF anywhere on this page to import it, or use the CLI for other formats. Each item is split into sections you can read and copy as Markdown for an LLM.</p>
                 <div class="cmd-list">
                     <div class="cmd">
                         <span class="cmd-label">PDF</span>
@@ -110,6 +110,28 @@
         </div>
     </div>
 
+    <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
+        <div class="drop-card">
+            <div class="drop-icon" aria-hidden="true">
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="1.6"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+                    <polyline points="14 3 14 9 20 9"></polyline>
+                    <line x1="12" y1="13" x2="12" y2="19"></line>
+                    <polyline points="9 16 12 13 15 16"></polyline>
+                </svg>
+            </div>
+            <div class="drop-title">Drop PDF to import</div>
+            <div class="drop-sub">Release to add it to your library</div>
+        </div>
+    </div>
+
+    <div id="upload-status" class="upload-status" style="display:none;">
+        <div class="upload-bar"><div class="upload-bar-fill"></div></div>
+        <div class="upload-msg">Uploading…</div>
+    </div>
+
     <script>
       // ---- "Continue" + last-opened from localStorage (no DB) ----
       function fmtAgo(ts) {
@@ -156,6 +178,128 @@
           if (noResults) noResults.style.display = visible === 0 ? '' : 'none';
         });
       }
+
+      // ---- Drag & drop PDF upload ----
+      const overlay = document.getElementById('drop-overlay');
+      const status = document.getElementById('upload-status');
+      const statusMsg = status.querySelector('.upload-msg');
+      const barFill = status.querySelector('.upload-bar-fill');
+      let dragDepth = 0;
+
+      function hasFiles(e) {
+        if (!e.dataTransfer) return false;
+        const types = e.dataTransfer.types;
+        if (!types) return false;
+        for (let i = 0; i < types.length; i++) {
+          if (types[i] === 'Files') return true;
+        }
+        return false;
+      }
+
+      function showStatus(msg, { progress = null, error = false, success = false } = {}) {
+        status.style.display = '';
+        status.classList.toggle('is-error', !!error);
+        status.classList.toggle('is-success', !!success);
+        statusMsg.textContent = msg;
+        if (progress === null) {
+          barFill.style.width = '0%';
+          status.classList.add('is-indeterminate');
+        } else {
+          status.classList.remove('is-indeterminate');
+          barFill.style.width = Math.max(0, Math.min(100, progress)) + '%';
+        }
+      }
+      function hideStatusSoon(delay) {
+        setTimeout(() => {
+          status.style.display = 'none';
+          status.classList.remove('is-error', 'is-success', 'is-indeterminate');
+          barFill.style.width = '0%';
+        }, delay);
+      }
+
+      function uploadPdf(file) {
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/upload');
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const pct = (e.loaded / e.total) * 100;
+              if (pct < 100) {
+                showStatus(`Uploading ${file.name}… ${Math.round(pct)}%`, { progress: pct });
+              } else {
+                showStatus(`Processing ${file.name}…`, { progress: null });
+              }
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try { resolve(JSON.parse(xhr.responseText)); }
+              catch (e) { reject(new Error('Bad server response')); }
+            } else {
+              let detail = `Upload failed (${xhr.status})`;
+              try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (_) {}
+              reject(new Error(detail));
+            }
+          };
+          xhr.onerror = () => reject(new Error('Network error'));
+          const fd = new FormData();
+          fd.append('file', file);
+          xhr.send(fd);
+        });
+      }
+
+      async function handleFiles(fileList) {
+        const files = Array.from(fileList || []);
+        const pdfs = files.filter(f => /\.pdf$/i.test(f.name));
+        if (!pdfs.length) {
+          if (files.length) {
+            showStatus('Only PDF files are supported.', { error: true, progress: 0 });
+            hideStatusSoon(3000);
+          }
+          return;
+        }
+        for (let i = 0; i < pdfs.length; i++) {
+          const file = pdfs[i];
+          const prefix = pdfs.length > 1 ? `(${i + 1}/${pdfs.length}) ` : '';
+          try {
+            showStatus(prefix + `Uploading ${file.name}…`, { progress: 0 });
+            const result = await uploadPdf(file);
+            showStatus(prefix + `Imported "${result.title}"`, { progress: 100, success: true });
+            if (i === pdfs.length - 1) {
+              setTimeout(() => { window.location.reload(); }, 600);
+              return;
+            }
+          } catch (err) {
+            showStatus(prefix + (err.message || 'Upload failed'), { error: true, progress: 0 });
+            hideStatusSoon(4000);
+            return;
+          }
+        }
+      }
+
+      window.addEventListener('dragenter', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        dragDepth++;
+        overlay.classList.add('show');
+      });
+      window.addEventListener('dragover', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+      window.addEventListener('dragleave', (e) => {
+        if (!hasFiles(e)) return;
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) overlay.classList.remove('show');
+      });
+      window.addEventListener('drop', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        dragDepth = 0;
+        overlay.classList.remove('show');
+        handleFiles(e.dataTransfer.files);
+      });
     </script>
 </body>
 </html>

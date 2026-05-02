@@ -345,6 +345,92 @@ button:focus-visible,
     font-style: italic;
 }
 
+/* ----- Drag & drop upload --------------------------------------------- */
+.drop-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 18, 12, 0.42);
+    backdrop-filter: blur(3px);
+    z-index: 1100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    font-family: var(--ui-font);
+}
+.drop-overlay.show { display: flex; }
+.drop-card {
+    background: var(--card);
+    border: 2px dashed var(--accent);
+    border-radius: var(--radius);
+    padding: 38px 56px;
+    box-shadow: var(--shadow-md);
+    text-align: center;
+    color: var(--fg);
+    max-width: 420px;
+}
+.drop-icon {
+    color: var(--accent);
+    margin-bottom: 12px;
+    display: flex;
+    justify-content: center;
+}
+.drop-title {
+    font-family: var(--content-font);
+    font-size: 1.25em;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.drop-sub {
+    color: var(--fg-soft);
+    font-size: 0.9em;
+}
+
+.upload-status {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--card);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 12px 18px 14px;
+    box-shadow: var(--shadow-md);
+    width: min(440px, calc(100vw - 32px));
+    z-index: 1050;
+    font-family: var(--ui-font);
+}
+.upload-msg {
+    color: var(--fg);
+    font-size: 0.9em;
+    margin-top: 8px;
+}
+.upload-bar {
+    height: 4px;
+    background: var(--bg-soft);
+    border-radius: 999px;
+    overflow: hidden;
+    position: relative;
+}
+.upload-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 999px;
+    transition: width 0.18s ease;
+}
+.upload-status.is-indeterminate .upload-bar-fill {
+    width: 40% !important;
+    animation: upload-indet 1.1s ease-in-out infinite;
+}
+@keyframes upload-indet {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(250%); }
+}
+.upload-status.is-error .upload-bar-fill { background: #c0533a; }
+.upload-status.is-error .upload-msg { color: #c0533a; }
+.upload-status.is-success .upload-bar-fill { background: #4f9d65; }
+
 /* ============================================================
    READER PAGE
    ============================================================ */
