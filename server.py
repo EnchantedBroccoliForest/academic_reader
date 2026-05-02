@@ -1,11 +1,14 @@
 import os
+import re
+import tempfile
 from functools import lru_cache
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
+    JSONResponse,
     PlainTextResponse,
     RedirectResponse,
 )
@@ -19,6 +22,7 @@ from reader3 import (
     Section,
     TOCEntry,
     load_book,
+    save_to_pickle,
 )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -183,6 +187,91 @@ async def book_markdown(book_id: str):
         parts.append(md.strip() + "\n")
 
     return "\n".join(parts)
+
+
+_UPLOAD_SLUG_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+_MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _slug_for_upload(filename: str) -> str:
+    base = os.path.splitext(os.path.basename(filename))[0]
+    base = _UPLOAD_SLUG_RE.sub("_", base).strip("._-")
+    return (base or "upload")[:80]
+
+
+def _unique_folder(dest_root: str, slug: str) -> str:
+    folder = f"{slug}_data"
+    path = os.path.join(dest_root, folder)
+    if not os.path.exists(path):
+        return path
+    i = 2
+    while True:
+        path = os.path.join(dest_root, f"{slug}-{i}_data")
+        if not os.path.exists(path):
+            return path
+        i += 1
+
+
+@app.post("/api/upload")
+async def upload_pdf(file: UploadFile = File(...)):
+    """Accept a PDF upload, run it through the PDF importer, and add it to
+    the library. Returns ``{book_id, title, url}`` on success."""
+    name = file.filename or ""
+    if not name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+    os.makedirs(BOOKS_DIR, exist_ok=True)
+
+    tmp_dir = tempfile.mkdtemp(prefix="reader3_upload_")
+    # Keep the original basename so the PDF importer's title fallback (which
+    # uses the file's basename when the PDF has no embedded title) is sensible.
+    safe_basename = os.path.basename(name) or "upload.pdf"
+    safe_basename = _UPLOAD_SLUG_RE.sub("_", safe_basename)
+    if not safe_basename.lower().endswith(".pdf"):
+        safe_basename += ".pdf"
+    tmp_path = os.path.join(tmp_dir, safe_basename)
+    try:
+        with open(tmp_path, "wb") as out:
+            total = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
+                    )
+                out.write(chunk)
+
+        slug = _slug_for_upload(name)
+        out_dir = _unique_folder(BOOKS_DIR, slug)
+
+        from importers.pdf import process_pdf
+        try:
+            book = process_pdf(tmp_path, out_dir)
+        except Exception as exc:
+            if os.path.isdir(out_dir):
+                import shutil
+                shutil.rmtree(out_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Failed to process PDF: {exc}")
+
+        # Preserve the original filename for provenance/source_file display.
+        book.source_file = os.path.basename(name)
+        save_to_pickle(book, out_dir)
+
+        book_id = os.path.basename(out_dir)
+        first_id = book.sections[0].id if book.sections else ""
+        url = f"/read/{book_id}/{first_id}" if first_id else f"/read/{book_id}"
+        return JSONResponse({
+            "book_id": book_id,
+            "title": book.metadata.title,
+            "url": url,
+        })
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.get("/read/{book_id}/images/{image_name}")
