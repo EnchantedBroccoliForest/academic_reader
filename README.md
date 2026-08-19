@@ -24,20 +24,22 @@ Each call creates a `*_data` folder that registers the book to your local librar
 uv run server.py
 ```
 
-Visit [localhost:8123](http://localhost:8123/) for your library. You can also import PDFs and EPUBs straight from the library page — hit **Add document** or drag a file onto the window.
+Visit [localhost:5000](http://localhost:5000/) for your library. You can also import PDFs and EPUBs straight from the library page — hit **Add document** or drag a file onto the window.
 
-The reader splits documents into sections at every H1/H2/H3 so the TOC actually navigates, math is rendered with KaTeX (vendored into `static/`, so it works offline), and you can grab a section as markdown for your LLM with one keystroke. Press `?` in the reader for the full shortcut list; the essentials:
+The reader splits documents into sections at every H1/H2/H3, renders the whole document in one continuous scroll, keeps the TOC synced to the active section, and renders math with KaTeX (vendored into `static/`, so it works offline). You can grab the active section as markdown for your LLM with one keystroke. Press `?` in the reader for the full shortcut list; the essentials:
 
 | key | action |
 | --- | --- |
-| `j` / `k` | next / previous section |
+| `j` / `k` | jump to next / previous section |
 | `c`       | copy current section as markdown (with provenance header) |
 | `C`       | copy entire paper |
 | `y`       | copy current selection (with provenance header) |
 | `g`       | fuzzy "go to section…" palette |
 | `?`       | shortcut help |
 
-Set `READER3_LIBRARY=~/papers` to point the server at a different library directory. Delete a book with the trash icon on its library card, or by removing its `*_data/` folder.
+The right-hand Codex panel can explain highlighted text as you read. Set `OPENAI_API_KEY` before starting the server, or paste a key into the panel for the current server session. Set `READER3_CODEX_MODEL` to change the model (default: `gpt-5`).
+
+Set `READER3_LIBRARY=~/papers` to point the server at a different library directory. The server binds to localhost by default; set `READER3_HOST=0.0.0.0` only when you deliberately want to expose it. Delete a book with the trash icon on its library card, or by removing its `*_data/` folder.
 
 ## License
 
