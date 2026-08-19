@@ -72,6 +72,10 @@
 
 * { box-sizing: border-box; }
 
+/* The UA's [hidden] rule is display:none, which any author `display` beats --
+   .btn sets inline-flex, so a `hidden` Continue link stayed visible. */
+[hidden] { display: none !important; }
+
 html, body { height: 100%; }
 
 body {

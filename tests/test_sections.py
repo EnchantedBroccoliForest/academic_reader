@@ -196,3 +196,50 @@ def test_book_spine_alias_back_compat():
                           html="<p>x</p>", text="x", order=0)],
     )
     assert b.spine == b.sections
+
+
+def test_load_book_resolves_classes_pickled_under_main(tmp_path):
+    """Books written by the pre-refactor ``python reader3.py x.epub`` recorded
+    their classes as ``__main__.Book`` etc. Those must still load however the
+    server is started. Reported by a review bot on PR #3."""
+    import pickle
+    import sys
+    import types
+
+    from reader3 import Section, load_book
+
+    # Build a pickle whose GLOBAL opcodes name __main__ rather than reader3.
+    fake_main = types.ModuleType("__main__")
+    fake_main.Book = Book
+    fake_main.BookMetadata = BookMetadata
+    fake_main.ChapterContent = ChapterContent
+    fake_main.Section = Section
+    real_main = sys.modules["__main__"]
+    sys.modules["__main__"] = fake_main
+    try:
+        for cls in (Book, BookMetadata, ChapterContent, Section):
+            cls.__module__ = "__main__"
+        legacy = Book.__new__(Book)
+        legacy.__dict__.update(dict(
+            metadata=BookMetadata(title="Dracula", authors=["Bram Stoker"]),
+            spine=[ChapterContent(id="c1", href="c1.xhtml", title="Chapter I",
+                                  content="<h1>Chapter I</h1><p>Journal.</p>",
+                                  text="Chapter I Journal.", order=0)],
+            toc=[], images={}, source_file="dracula.epub", processed_at="",
+            version="3.0",
+        ))
+        folder = tmp_path / "dracula_data"
+        folder.mkdir()
+        (folder / "book.pkl").write_bytes(pickle.dumps(legacy))
+    finally:
+        sys.modules["__main__"] = real_main
+        for cls in (Book, BookMetadata, ChapterContent, Section):
+            cls.__module__ = "reader3"
+
+    raw = (folder / "book.pkl").read_bytes()
+    assert b"__main__" in raw, "fixture did not pickle under __main__"
+
+    loaded = load_book(str(folder))
+    assert loaded is not None, "legacy __main__ pickle failed to load"
+    assert loaded.metadata.title == "Dracula"
+    assert [s.title for s in loaded.sections] == ["Chapter I"]

@@ -12,6 +12,7 @@ and delegates to ``importers.epub.process_epub``.
 import os
 import pickle
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -113,9 +114,27 @@ _DROP_TAGS = (
 _SAFE_SCHEMES = ('http', 'https', 'mailto', 'data')
 _URL_ATTRS = ('href', 'src', 'srcset', 'action', 'formaction', 'poster',
               'background', 'xlink:href', 'data')
-_SCHEME_RE = re.compile(r'^\s*([a-zA-Z][a-zA-Z0-9+.\-]*)\s*:')
+_SCHEME_RE = re.compile(r'^([a-zA-Z][a-zA-Z0-9+.\-]*):')
 # data: URLs are only safe for images, never for documents or scripts.
-_SAFE_DATA_RE = re.compile(r'^\s*data:image/(png|jpe?g|gif|webp|bmp)[;,]', re.I)
+_SAFE_DATA_RE = re.compile(r'^data:image/(png|jpe?g|gif|webp|bmp)[;,]', re.I)
+
+# Per the WHATWG URL spec a browser removes every ASCII tab and newline from a
+# URL, then trims leading/trailing C0 controls and spaces, *before* reading the
+# scheme. Anything that inspects the raw string is therefore looking at
+# something the browser will never see: ``jav&#x09;ascript:alert(1)`` decodes
+# to "jav\tascript:..." (no scheme by a naive read) but navigates as
+# javascript:. Normalize the same way the browser will.
+_URL_STRIP_ANYWHERE = str.maketrans('', '', '\t\n\r')
+
+
+def _normalize_url(value: str) -> str:
+    """Collapse a URL the way a browser does before it resolves the scheme."""
+    return value.translate(_URL_STRIP_ANYWHERE).strip('\x00\x01\x02\x03\x04'
+                                                     '\x05\x06\x07\x08\x0b'
+                                                     '\x0c\x0e\x0f\x10\x11'
+                                                     '\x12\x13\x14\x15\x16'
+                                                     '\x17\x18\x19\x1a\x1b'
+                                                     '\x1c\x1d\x1e\x1f\x20')
 
 
 def _is_safe_url(value: str) -> bool:
@@ -125,12 +144,13 @@ def _is_safe_url(value: str) -> bool:
     """
     if not value:
         return True
-    m = _SCHEME_RE.match(value.replace('\x00', ''))
+    normalized = _normalize_url(value)
+    m = _SCHEME_RE.match(normalized)
     if not m:
         return True  # relative
     scheme = m.group(1).lower()
     if scheme == 'data':
-        return bool(_SAFE_DATA_RE.match(value))
+        return bool(_SAFE_DATA_RE.match(normalized))
     return scheme in _SAFE_SCHEMES
 
 
@@ -385,6 +405,28 @@ def migrate_book(book) -> "Book":
 # ---------------------------------------------------------------------------
 
 
+def reset_output_dir(output_dir: str) -> None:
+    """Make ``output_dir`` exist and be empty, without recreating it.
+
+    Importers used to ``rmtree`` the directory and make it again. That releases
+    the directory the caller reserved, so a concurrent upload picking a name
+    could slip into the gap and both would write to the same folder. Clearing
+    the contents in place keeps the reservation held for the whole import.
+    """
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        return
+    for entry in os.listdir(output_dir):
+        target = os.path.join(output_dir, entry)
+        if os.path.isdir(target) and not os.path.islink(target):
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+
+
 def save_to_pickle(book: Book, output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
     p_path = os.path.join(output_dir, "book.pkl")
@@ -394,13 +436,33 @@ def save_to_pickle(book: Book, output_dir: str) -> str:
     return p_path
 
 
+class _LegacyUnpickler(pickle.Unpickler):
+    """Resolve model classes that old pickles recorded under ``__main__``.
+
+    Before the importers were split out, ``python reader3.py book.epub`` built
+    the Book inside the script itself, so pickle wrote ``__main__.Book``,
+    ``__main__.BookMetadata`` and friends. Whether those names resolve at load
+    time then depends on how the server happens to be started -- they did under
+    ``python server.py`` (which made server.py the ``__main__`` module) and did
+    not under ``uvicorn server:app``. Mapping them here makes such libraries
+    load the same way regardless, without relying on imports that look unused.
+    """
+
+    def find_class(self, module, name):
+        if module == "__main__":
+            candidate = globals().get(name)
+            if isinstance(candidate, type):
+                return candidate
+        return super().find_class(module, name)
+
+
 def load_book(folder_name: str) -> Optional[Book]:
     file_path = os.path.join(folder_name, "book.pkl")
     if not os.path.exists(file_path):
         return None
     try:
         with open(file_path, "rb") as f:
-            book = pickle.load(f)
+            book = _LegacyUnpickler(f).load()
         return migrate_book(book)
     except Exception as e:
         print(f"Error loading book {folder_name}: {e}")

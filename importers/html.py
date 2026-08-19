@@ -6,7 +6,6 @@ into sections.
 """
 
 import os
-import shutil
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -19,6 +18,7 @@ from reader3 import (
     Book,
     BookMetadata,
     clean_html_content,
+    reset_output_dir,
     split_inputs_into_sections,
 )
 
@@ -55,8 +55,7 @@ def process_html(
         print(f"Fetching {url}...")
         raw_html = fetch_html(url)
 
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
+    reset_output_dir(output_dir)
     os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
 
     title, cleaned = extract_main_content(raw_html)

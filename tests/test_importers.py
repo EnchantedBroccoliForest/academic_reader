@@ -99,3 +99,50 @@ def test_pdf_importer_sanitizes_raw_html_in_the_text_layer():
     assert "Body text" in html
     assert "onerror" not in html
     assert "<script" not in html
+
+
+def test_clean_html_strips_control_chars_before_scheme_check():
+    """Browsers remove tab/newline from URLs before reading the scheme, so a
+    naive read of the raw string sees a "relative" URL that in fact navigates
+    to javascript:. Reported by a review bot on PR #3."""
+    from bs4 import BeautifulSoup
+    from reader3 import clean_html_content
+
+    for raw in ("jav&#x09;ascript:alert(1)",
+                "jav&#10;ascript:alert(1)",
+                "jav&#13;ascript:alert(1)",
+                "&#1;javascript:alert(1)",
+                "  javascript:alert(1)",
+                "JaVaScRiPt:alert(1)",
+                "vb&#x09;script:msgbox(1)"):
+        out = str(clean_html_content(BeautifulSoup(f'<a href="{raw}">x</a>', "html.parser")))
+        assert "href=" not in out, f"not stripped: {raw}"
+
+
+def test_clean_html_keeps_legitimate_urls_with_odd_spacing():
+    from bs4 import BeautifulSoup
+    from reader3 import clean_html_content
+
+    for raw in ("https://example.com", " https://example.com ", "images/f.png",
+                "#anchor", "mailto:a@b.c", "data:image/png;base64,AAAA"):
+        out = str(clean_html_content(BeautifulSoup(f'<a href="{raw}">x</a>', "html.parser")))
+        assert "href=" in out, f"wrongly stripped: {raw}"
+
+
+def test_reset_output_dir_empties_without_recreating():
+    """The importers must not release a directory the caller reserved."""
+    import os
+    import tempfile
+    from reader3 import reset_output_dir
+
+    root = tempfile.mkdtemp()
+    target = os.path.join(root, "book_data")
+    os.makedirs(os.path.join(target, "images"))
+    open(os.path.join(target, "book.pkl"), "wb").close()
+    inode_before = os.stat(target).st_ino
+
+    reset_output_dir(target)
+
+    assert os.path.isdir(target)
+    assert os.listdir(target) == []
+    assert os.stat(target).st_ino == inode_before, "directory was recreated"

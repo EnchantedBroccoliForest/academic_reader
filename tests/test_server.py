@@ -156,3 +156,42 @@ def test_favicon_is_served(client):
 def test_unknown_book_404s(client):
     assert client.get("/read/nope_data").status_code == 404
     assert client.get("/api/nope_data/markdown").status_code == 404
+
+
+# --- review-bot findings on PR #3 ------------------------------------------
+
+def test_reserve_folder_never_hands_out_the_same_path_twice(tmp_path):
+    """Concurrent uploads of the same filename must not share an output dir."""
+    import server as server_mod
+
+    handed = [server_mod._reserve_folder(str(tmp_path), "paper") for _ in range(25)]
+    assert len(set(handed)) == 25, "a path was reserved twice"
+    assert all(os.path.isdir(p) for p in handed), "reservation did not create the dir"
+    assert os.path.basename(handed[0]) == "paper_data"
+    assert os.path.basename(handed[1]) == "paper-2_data"
+
+
+def test_reserve_folder_is_atomic_under_threads(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import server as server_mod
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        handed = list(pool.map(
+            lambda _: server_mod._reserve_folder(str(tmp_path), "paper"), range(64)
+        ))
+    assert len(set(handed)) == 64, "concurrent reservations collided"
+
+
+def test_continue_link_is_hidden_not_just_marked_hidden(client):
+    """`.btn { display: inline-flex }` beats the UA [hidden] rule, so the
+    stylesheet needs its own. Reported by a review bot on PR #3."""
+    css = open(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "static", "reader.css"),
+        encoding="utf-8",
+    ).read()
+    assert "[hidden] { display: none !important; }" in css
+
+    html = client.get("/").text
+    assert "data-continue-for" in html and "hidden>" in html

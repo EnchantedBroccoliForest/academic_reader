@@ -6,7 +6,6 @@ heading-derived sections and TOC.
 """
 
 import os
-import shutil
 from datetime import datetime
 from typing import List, Tuple
 from urllib.parse import unquote
@@ -19,6 +18,7 @@ from reader3 import (
     Book,
     BookMetadata,
     clean_html_content,
+    reset_output_dir,
     split_inputs_into_sections,
 )
 
@@ -76,8 +76,7 @@ def process_epub(epub_path: str, output_dir: str) -> Book:
     book_obj = epub.read_epub(epub_path)
     metadata = _extract_metadata(book_obj)
 
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
+    reset_output_dir(output_dir)
     images_dir = os.path.join(output_dir, "images")
     os.makedirs(images_dir, exist_ok=True)
 

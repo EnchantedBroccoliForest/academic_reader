@@ -18,6 +18,7 @@ from reader3 import (
     Book,
     BookMetadata,
     clean_html_content,
+    reset_output_dir,
     split_inputs_into_sections,
 )
 
@@ -77,8 +78,7 @@ def process_pdf(
     import pymupdf4llm  # local import: pymupdf4llm is heavy at import time
 
     print(f"Extracting markdown from {pdf_path}...")
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
+    reset_output_dir(output_dir)
     os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
 
     md_text = pymupdf4llm.to_markdown(pdf_path)

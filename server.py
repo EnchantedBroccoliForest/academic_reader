@@ -267,17 +267,23 @@ def _slug_for_upload(filename: str) -> str:
     return (base or "upload")[:80]
 
 
-def _unique_folder(dest_root: str, slug: str) -> str:
-    folder = f"{slug}_data"
-    path = os.path.join(dest_root, folder)
-    if not os.path.exists(path):
-        return path
+def _reserve_folder(dest_root: str, slug: str) -> str:
+    """Pick a free ``*_data`` folder name and create it, atomically.
+
+    ``os.makedirs`` without ``exist_ok`` is the reservation: it either creates
+    the directory or raises, so two concurrent uploads of the same filename
+    cannot both be handed the same path and clobber each other's output.
+    """
+    candidate = f"{slug}_data"
     i = 2
     while True:
-        path = os.path.join(dest_root, f"{slug}-{i}_data")
-        if not os.path.exists(path):
+        path = os.path.join(dest_root, candidate)
+        try:
+            os.makedirs(path)
             return path
-        i += 1
+        except FileExistsError:
+            candidate = f"{slug}-{i}_data"
+            i += 1
 
 
 def _import_upload(tmp_path: str, out_dir: str, ext: str) -> Book:
@@ -327,7 +333,7 @@ async def upload_document(file: UploadFile = File(...)):
                 out.write(chunk)
 
         slug = _slug_for_upload(name)
-        out_dir = _unique_folder(BOOKS_DIR, slug)
+        out_dir = _reserve_folder(BOOKS_DIR, slug)
 
         try:
             book = await run_in_threadpool(_import_upload, tmp_path, out_dir, ext)
