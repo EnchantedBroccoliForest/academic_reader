@@ -7,14 +7,12 @@ import pickle
 # Allow ``python -m pytest tests/`` from repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest
 from bs4 import BeautifulSoup
 
 from reader3 import (
     Book,
     BookMetadata,
     ChapterContent,
-    TOCEntry,
     build_toc_from_sections,
     migrate_book,
     slugify,

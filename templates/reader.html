@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ section.title }} — {{ book.metadata.title }}</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,16 +14,10 @@
     <link rel="stylesheet" href="/static/reader.css">
     <script src="/static/theme.js"></script>
 
-    <!-- KaTeX (CDN). Loads after CSS so unstyled equations don't flash. -->
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
-          crossorigin="anonymous">
-    <script defer
-            src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
-            crossorigin="anonymous"></script>
-    <script defer
-            src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
-            crossorigin="anonymous"></script>
+    <!-- KaTeX, vendored into static/ so math still renders offline. -->
+    <link rel="stylesheet" href="/static/katex/katex.min.css">
+    <script defer src="/static/katex/katex.min.js"></script>
+    <script defer src="/static/katex/contrib/auto-render.min.js"></script>
 </head>
 <body class="reader-body">
 
@@ -66,11 +61,31 @@
             {% endfor %}
             </ul>
         {% endmacro %}
-        {{ render_toc(book.toc) }}
+
+        <!-- On mobile this collapses into a disclosure so the TOC doesn't sit
+             on top of every section; on desktop the CSS keeps it always open. -->
+        <details id="toc-disclosure" class="toc-disclosure">
+            <summary class="toc-summary">
+                <span class="toc-summary-label">Contents</span>
+                <span class="toc-summary-current">{{ section.title }}</span>
+                <svg class="toc-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="m6 9 6 6 6-6"></path>
+                </svg>
+            </summary>
+            <div class="toc-scroll">
+                {{ render_toc(book.toc) }}
+            </div>
+        </details>
     </div>
 
     <!-- MAIN CONTENT -->
     <div id="main">
+        <div class="reading-progress" aria-hidden="true">
+            <div class="reading-progress-fill"
+                 style="width: {{ ((section_idx + 1) / section_count * 100) | round(2) }}%;"></div>
+        </div>
         <div class="content-container">
             <div class="section-path">
                 <span>Section {{ section_idx + 1 }} of {{ section_count }}{% if section.level > 1 %} · H{{ section.level }}{% endif %}</span>
@@ -80,6 +95,13 @@
                     &#x1F4CB; Copy for LLM
                 </button>
             </div>
+
+            {% if abstract %}
+                <aside class="abstract">
+                    <h2 class="abstract-label">Abstract</h2>
+                    <p>{{ abstract }}</p>
+                </aside>
+            {% endif %}
 
             <div class="book-content">
                 {{ section.html | safe }}
@@ -108,13 +130,17 @@
         <div class="palette" role="dialog" aria-label="Go to section">
             <input id="palette-input" type="text" placeholder="Filter sections…" autocomplete="off">
             <div id="palette-results" class="palette-results"></div>
+            <div id="palette-more" class="palette-more" hidden></div>
         </div>
     </div>
 
     <!-- Help modal (`?`) -->
     <div id="help-modal" class="help-modal">
-        <div class="help-card">
-            <h2>Keyboard shortcuts</h2>
+        <div class="help-card" role="dialog" aria-label="Keyboard shortcuts">
+            <div class="help-head">
+                <h2>Keyboard shortcuts</h2>
+                <button type="button" class="help-close" aria-label="Close">&times;</button>
+            </div>
             <table>
                 <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>next / previous section</td></tr>
                 <tr><td><kbd>c</kbd></td><td>copy current section for LLM</td></tr>

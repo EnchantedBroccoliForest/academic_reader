@@ -12,20 +12,29 @@ from datetime import datetime
 from typing import Optional
 
 import markdown as md_lib
+from bs4 import BeautifulSoup
 
 from reader3 import (
     Book,
     BookMetadata,
+    clean_html_content,
     split_inputs_into_sections,
 )
 
 
 def _markdown_to_html(text: str) -> str:
-    return md_lib.markdown(
+    """Convert extracted markdown to HTML, then sanitize.
+
+    python-markdown passes raw HTML blocks straight through, so anything the
+    PDF's text layer happens to contain would otherwise land in section.html
+    and be rendered with ``| safe``.
+    """
+    html = md_lib.markdown(
         text,
         extensions=["extra", "tables", "footnotes", "sane_lists"],
         output_format="html5",
     )
+    return str(clean_html_content(BeautifulSoup(html, "html.parser")))
 
 
 def _extract_pdf_metadata(pdf_path: str) -> BookMetadata:

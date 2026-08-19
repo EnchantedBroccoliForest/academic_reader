@@ -24,7 +24,9 @@ Each call creates a `*_data` folder that registers the book to your local librar
 uv run server.py
 ```
 
-Visit [localhost:8123](http://localhost:8123/) for your library. The reader splits documents into sections at every H1/H2/H3 so the TOC actually navigates, math is rendered with KaTeX, and you can grab a section as markdown for your LLM with one keystroke. Press `?` in the reader for the full shortcut list; the essentials:
+Visit [localhost:8123](http://localhost:8123/) for your library. You can also import PDFs and EPUBs straight from the library page — hit **Add document** or drag a file onto the window.
+
+The reader splits documents into sections at every H1/H2/H3 so the TOC actually navigates, math is rendered with KaTeX (vendored into `static/`, so it works offline), and you can grab a section as markdown for your LLM with one keystroke. Press `?` in the reader for the full shortcut list; the essentials:
 
 | key | action |
 | --- | --- |
@@ -35,7 +37,7 @@ Visit [localhost:8123](http://localhost:8123/) for your library. The reader spli
 | `g`       | fuzzy "go to section…" palette |
 | `?`       | shortcut help |
 
-Set `READER3_LIBRARY=~/papers` to point the server at a different library directory. Delete a book by removing its `*_data/` folder.
+Set `READER3_LIBRARY=~/papers` to point the server at a different library directory. Delete a book with the trash icon on its library card, or by removing its `*_data/` folder.
 
 ## License
 

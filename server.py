@@ -1,10 +1,12 @@
 import os
 import re
+import shutil
 import tempfile
 from functools import lru_cache
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -15,15 +17,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from reader3 import (
-    Book,
-    BookMetadata,
-    ChapterContent,  # re-export so old pickles unpickle
-    Section,
-    TOCEntry,
-    load_book,
-    save_to_pickle,
-)
+from reader3 import Book, load_book, save_to_pickle
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -36,6 +30,12 @@ if os.path.isdir(_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 BOOKS_DIR = os.environ.get("READER3_LIBRARY", ".")
+
+# Handlers below are deliberately ``def`` rather than ``async def``: they do
+# blocking disk I/O, unpickling and markdown conversion. Starlette runs sync
+# handlers in a threadpool, so one slow book no longer stalls every other
+# request. The two genuinely async handlers (upload) await the request body
+# and hand their CPU-bound work to ``run_in_threadpool`` explicitly.
 
 
 def _book_pkl_path(folder_name: str) -> str:
@@ -62,8 +62,19 @@ def _section_index(book: Book, section_id: str) -> Optional[int]:
     return None
 
 
+def _safe_book_dir(book_id: str) -> str:
+    """Resolve a book folder, refusing anything that escapes the library."""
+    folder = os.path.basename(book_id)
+    if not folder or not folder.endswith("_data"):
+        raise HTTPException(status_code=404, detail="Book not found")
+    path = os.path.join(BOOKS_DIR, folder)
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=404, detail="Book not found")
+    return path
+
+
 @app.get("/", response_class=HTMLResponse)
-async def library_view(request: Request):
+def library_view(request: Request):
     books = []
     if os.path.exists(BOOKS_DIR):
         for item in sorted(os.listdir(BOOKS_DIR)):
@@ -83,24 +94,63 @@ async def library_view(request: Request):
                 "sections": len(book.sections),
                 "first_section_id": first_id,
                 "arxiv_id": book.metadata.arxiv_id,
+                "abstract": _snippet(book),
+                "added": _added_on(book),
             })
     return templates.TemplateResponse(
         request, "library.html", {"books": books}
     )
 
 
-@app.get("/read/{book_id}", response_class=HTMLResponse)
-async def read_book_root(request: Request, book_id: str):
+def _snippet(book: Book, limit: int = 260) -> str:
+    """First readable prose for the library card: abstract, else body text.
+
+    Falls back to walking sections because plenty of documents (EPUBs, scraped
+    pages) have no abstract, and a card with only a title is hard to recognise.
+    """
+    text = (book.metadata.abstract or book.metadata.description or "").strip()
+    if not text:
+        collected = []
+        for sec in book.sections:
+            chunk = " ".join((sec.text or "").split())
+            if chunk:
+                collected.append(chunk)
+            if sum(len(c) for c in collected) >= limit:
+                break
+        text = " ".join(collected)
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+
+
+def _added_on(book: Book) -> str:
+    """``processed_at`` is an ISO timestamp; show just the date."""
+    stamp = (book.processed_at or "").strip()
+    return stamp[:10] if len(stamp) >= 10 else ""
+
+
+@app.get("/read/{book_id}")
+def read_book_root(book_id: str):
+    """Redirect to the first section.
+
+    Rendering here instead would leave the browser's base URL at ``/read/``,
+    which breaks the relative ``images/...`` paths the EPUB importer writes.
+    """
     book = load_book_cached(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
     if not book.sections:
         raise HTTPException(status_code=404, detail="Book has no readable sections")
-    return await _render_section(request, book, book_id, 0)
+    return RedirectResponse(
+        url=f"/read/{book_id}/{book.sections[0].id}", status_code=302
+    )
 
 
 @app.get("/read/{book_id}/{section_ref}", response_class=HTMLResponse)
-async def read_section(request: Request, book_id: str, section_ref: str):
+def read_section(request: Request, book_id: str, section_ref: str):
     """``section_ref`` is a Section.id; back-compat: an integer is treated as
     a linear index into ``book.sections``."""
     book = load_book_cached(book_id)
@@ -120,10 +170,10 @@ async def read_section(request: Request, book_id: str, section_ref: str):
     idx = _section_index(book, section_ref)
     if idx is None:
         raise HTTPException(status_code=404, detail=f"Unknown section: {section_ref}")
-    return await _render_section(request, book, book_id, idx)
+    return _render_section(request, book, book_id, idx)
 
 
-async def _render_section(request: Request, book: Book, book_id: str, idx: int):
+def _render_section(request: Request, book: Book, book_id: str, idx: int):
     section = book.sections[idx]
     prev_id = book.sections[idx - 1].id if idx > 0 else None
     next_id = book.sections[idx + 1].id if idx + 1 < len(book.sections) else None
@@ -147,23 +197,45 @@ async def _render_section(request: Request, book: Book, book_id: str, idx: int):
             "prev_id": prev_id,
             "next_id": next_id,
             "source_tag": source_tag,
+            # The abstract belongs to the paper, not to any one section, so it
+            # rides along with the first section only.
+            "abstract": book.metadata.abstract if idx == 0 else None,
         },
     )
 
 
-@app.get("/api/{book_id}/markdown", response_class=PlainTextResponse)
-async def book_markdown(book_id: str):
-    """Whole paper as markdown with provenance header. Used by hotkey ``C``."""
-    book = load_book_cached(book_id)
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
-
+def _section_markdown(section) -> str:
+    """One section as markdown. The heading is already inside ``section.html``
+    — do not prepend another one."""
     try:
         from markdownify import markdownify as _md
     except ImportError:  # pragma: no cover
         from reader3 import extract_plain_text
-        def _md(html, **_):
-            return extract_plain_text(html)
+        return extract_plain_text(section.html)
+
+    try:
+        return _md(
+            section.html,
+            heading_style="ATX",
+            # LaTeX is full of _ and *; markdownify would escape them into
+            # \_ and \*, which is not valid TeX and breaks every equation.
+            escape_underscores=False,
+            escape_asterisks=False,
+            escape_misc=False,
+        )
+    except TypeError:
+        # Older markdownify without the escape_* options.
+        return _md(section.html, heading_style="ATX")
+    except Exception:
+        return section.text
+
+
+@app.get("/api/{book_id}/markdown", response_class=PlainTextResponse)
+def book_markdown(book_id: str):
+    """Whole paper as markdown with provenance header. Used by hotkey ``C``."""
+    book = load_book_cached(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
 
     parts = []
     title = book.metadata.title or "Untitled"
@@ -179,18 +251,14 @@ async def book_markdown(book_id: str):
         parts.append("## Abstract\n\n" + book.metadata.abstract.strip() + "\n")
 
     for sec in book.sections:
-        parts.append("\n" + "#" * min(sec.level, 6) + " " + sec.title + "\n")
-        try:
-            md = _md(sec.html, heading_style="ATX")
-        except Exception:
-            md = sec.text
-        parts.append(md.strip() + "\n")
+        parts.append("\n" + _section_markdown(sec).strip() + "\n")
 
     return "\n".join(parts)
 
 
 _UPLOAD_SLUG_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+_SUPPORTED_UPLOADS = (".pdf", ".epub")
 
 
 def _slug_for_upload(filename: str) -> str:
@@ -212,23 +280,36 @@ def _unique_folder(dest_root: str, slug: str) -> str:
         i += 1
 
 
+def _import_upload(tmp_path: str, out_dir: str, ext: str) -> Book:
+    """Blocking import work. Runs in a threadpool, never on the event loop."""
+    if ext == ".epub":
+        from importers.epub import process_epub
+        return process_epub(tmp_path, out_dir)
+    from importers.pdf import process_pdf
+    return process_pdf(tmp_path, out_dir)
+
+
 @app.post("/api/upload")
-async def upload_pdf(file: UploadFile = File(...)):
-    """Accept a PDF upload, run it through the PDF importer, and add it to
-    the library. Returns ``{book_id, title, url}`` on success."""
+async def upload_document(file: UploadFile = File(...)):
+    """Accept a PDF or EPUB upload, import it, and add it to the library.
+    Returns ``{book_id, title, url}`` on success."""
     name = file.filename or ""
-    if not name.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in _SUPPORTED_UPLOADS:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and EPUB files are supported.",
+        )
 
     os.makedirs(BOOKS_DIR, exist_ok=True)
 
     tmp_dir = tempfile.mkdtemp(prefix="reader3_upload_")
-    # Keep the original basename so the PDF importer's title fallback (which
-    # uses the file's basename when the PDF has no embedded title) is sensible.
-    safe_basename = os.path.basename(name) or "upload.pdf"
+    # Keep the original basename so importer title fallbacks (which use the
+    # file's basename when the document has no embedded title) stay sensible.
+    safe_basename = os.path.basename(name) or f"upload{ext}"
     safe_basename = _UPLOAD_SLUG_RE.sub("_", safe_basename)
-    if not safe_basename.lower().endswith(".pdf"):
-        safe_basename += ".pdf"
+    if not safe_basename.lower().endswith(ext):
+        safe_basename += ext
     tmp_path = os.path.join(tmp_dir, safe_basename)
     try:
         with open(tmp_path, "wb") as out:
@@ -248,18 +329,18 @@ async def upload_pdf(file: UploadFile = File(...)):
         slug = _slug_for_upload(name)
         out_dir = _unique_folder(BOOKS_DIR, slug)
 
-        from importers.pdf import process_pdf
         try:
-            book = process_pdf(tmp_path, out_dir)
+            book = await run_in_threadpool(_import_upload, tmp_path, out_dir, ext)
+            # Preserve the original filename for provenance/source_file display.
+            book.source_file = os.path.basename(name)
+            await run_in_threadpool(save_to_pickle, book, out_dir)
         except Exception as exc:
             if os.path.isdir(out_dir):
-                import shutil
                 shutil.rmtree(out_dir, ignore_errors=True)
-            raise HTTPException(status_code=500, detail=f"Failed to process PDF: {exc}")
-
-        # Preserve the original filename for provenance/source_file display.
-        book.source_file = os.path.basename(name)
-        save_to_pickle(book, out_dir)
+            kind = "EPUB" if ext == ".epub" else "PDF"
+            raise HTTPException(
+                status_code=500, detail=f"Failed to process {kind}: {exc}"
+            )
 
         book_id = os.path.basename(out_dir)
         first_id = book.sections[0].id if book.sections else ""
@@ -270,18 +351,41 @@ async def upload_pdf(file: UploadFile = File(...)):
             "url": url,
         })
     finally:
-        import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+@app.delete("/api/{book_id}")
+def delete_book(book_id: str):
+    """Remove a book's ``*_data`` folder from the library."""
+    path = _safe_book_dir(book_id)
+    title = ""
+    book = load_book_cached(os.path.basename(path))
+    if book:
+        title = book.metadata.title
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.isdir(path):
+        raise HTTPException(status_code=500, detail="Could not delete the folder.")
+    # The mtime-keyed cache can't know the file is gone; clear it.
+    _load_cached.cache_clear()
+    return JSONResponse({"book_id": os.path.basename(path), "title": title})
+
+
 @app.get("/read/{book_id}/images/{image_name}")
-async def serve_image(book_id: str, image_name: str):
+def serve_image(book_id: str, image_name: str):
     safe_book_id = os.path.basename(book_id)
     safe_image_name = os.path.basename(image_name)
     img_path = os.path.join(BOOKS_DIR, safe_book_id, "images", safe_image_name)
     if not os.path.exists(img_path):
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(img_path)
+
+
+@app.get("/favicon.ico")
+def favicon():
+    path = os.path.join(_STATIC_DIR, "favicon.svg")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="No favicon")
 
 
 if __name__ == "__main__":

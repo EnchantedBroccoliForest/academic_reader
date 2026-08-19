@@ -7,8 +7,6 @@ Falls back to the PDF when ar5iv isn't available.
 
 import os
 import re
-import shutil
-from datetime import datetime
 from typing import Optional
 from xml.etree import ElementTree as ET
 
