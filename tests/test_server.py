@@ -51,10 +51,12 @@ def client(tmp_path, monkeypatch):
     save_to_pickle(book, str(tmp_path / "paper_data"))
 
     monkeypatch.setenv("READER3_LIBRARY", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     for mod in ("server",):
         sys.modules.pop(mod, None)
     import server as server_mod
     server_mod.BOOKS_DIR = str(tmp_path)
+    server_mod._session_codex_api_key = ""
     server_mod._load_cached.cache_clear()
     return TestClient(server_mod.app)
 
@@ -86,28 +88,72 @@ def test_whole_paper_markdown_does_not_escape_latex(client):
     assert "\\sum_{i=1}^n x_i" in md
 
 
-# --- C4 -------------------------------------------------------------------
+# --- continuous reader -----------------------------------------------------
 
-def test_book_root_redirects_to_first_section(client):
-    """Rendering here would break relative images/... paths."""
+def test_book_root_renders_all_sections(client):
     resp = client.get("/read/paper_data", follow_redirects=False)
+    assert resp.status_code == 200
+    html = resp.text
+    assert 'class="reader-section"' in html
+    assert 'id="attention-is-all-you-need"' in html
+    assert 'id="background"' in html
+    assert 'id="self-attention"' in html
+    assert 'id="codex-panel"' in html
+
+
+def test_section_ref_redirects_to_continuous_anchor(client):
+    resp = client.get("/read/paper_data/background", follow_redirects=False)
     assert resp.status_code == 302
-    assert resp.headers["location"] == "/read/paper_data/attention-is-all-you-need"
+    assert resp.headers["location"] == "/read/paper_data#background"
 
 
 def test_integer_section_ref_still_redirects(client):
     resp = client.get("/read/paper_data/1", follow_redirects=False)
     assert resp.status_code == 302
-    assert resp.headers["location"] == "/read/paper_data/background"
+    assert resp.headers["location"] == "/read/paper_data#background"
 
 
 # --- F4 -------------------------------------------------------------------
 
-def test_abstract_renders_on_first_section_only(client):
-    first = client.get("/read/paper_data/attention-is-all-you-need").text
-    assert "We propose the Transformer." in first
-    later = client.get("/read/paper_data/background").text
-    assert "We propose the Transformer." not in later
+def test_abstract_renders_once_on_continuous_reader(client):
+    html = client.get("/read/paper_data").text
+    assert html.count("We propose the Transformer.") == 1
+
+
+# --- Codex ----------------------------------------------------------------
+
+def test_codex_key_status_starts_unconfigured(client):
+    resp = client.get("/api/codex/key-status")
+    assert resp.status_code == 200
+    assert resp.json()["configured"] is False
+
+
+def test_codex_key_can_be_saved_and_cleared(client):
+    saved = client.post("/api/codex/key", json={"api_key": "sk-test"})
+    assert saved.status_code == 200
+    assert saved.json()["configured"] is True
+    assert saved.json()["source"] == "session"
+
+    cleared = client.delete("/api/codex/key")
+    assert cleared.status_code == 200
+    assert cleared.json()["configured"] is False
+
+
+def test_codex_explain_requires_a_key(client):
+    resp = client.post("/api/codex/explain", json={"text": "multi-head attention"})
+    assert resp.status_code == 400
+    assert "key" in resp.json()["detail"].lower()
+
+
+def test_response_text_extracts_responses_api_content(client):
+    import server
+
+    assert server._response_text({"output_text": " hello "}) == "hello"
+    assert server._response_text({
+        "output": [{
+            "content": [{"type": "output_text", "text": "from nested content"}]
+        }]
+    }) == "from nested content"
 
 
 # --- F3 -------------------------------------------------------------------
@@ -147,6 +193,8 @@ def test_library_lists_the_book_with_a_snippet(client):
     html = client.get("/").text
     assert "Attention Is All You Need" in html
     assert "We propose the Transformer." in html
+    assert 'href="/read/paper_data"' in html
+    assert 'href="/read/paper_data/attention-is-all-you-need"' not in html
 
 
 def test_favicon_is_served(client):

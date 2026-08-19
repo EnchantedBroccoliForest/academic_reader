@@ -1,5 +1,5 @@
 // reader3 client-side: KaTeX rendering, hotkeys, scroll-spy, copy-for-LLM,
-// section palette. No build step; this is plain ES2020.
+// section palette, and Codex explanations. Plain ES2020, no build step.
 
 (function () {
   'use strict';
@@ -8,11 +8,13 @@
   const bookId = cfg.bookId;
   const sections = cfg.sections || [];   // [{id, title, level}]
   const currentId = cfg.currentSectionId;
-  const currentIdx = sections.findIndex(s => s.id === currentId);
   const paperTitle = cfg.title || '';
   const paperAuthors = (cfg.authors || []).join(', ');
   const sourceTag = cfg.sourceTag || '';
-  const sectionTitle = cfg.sectionTitle || '';
+  let activeIdx = Math.max(0, sections.findIndex(s => s.id === currentId));
+  let keyConfigured = !!(cfg.codexKey && cfg.codexKey.configured);
+  let keySource = cfg.codexKey ? cfg.codexKey.source : null;
+  let codexModel = cfg.codexKey ? cfg.codexKey.model : '';
 
   // ---- KaTeX -------------------------------------------------------------
   function renderMath() {
@@ -51,10 +53,31 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
   }
 
+  // ---- Helpers -----------------------------------------------------------
+  function sectionEls() {
+    return Array.from(document.querySelectorAll('.reader-section'));
+  }
+
+  function scrollRoot() {
+    const main = document.getElementById('main');
+    if (main && main.scrollHeight > main.clientHeight + 2) return main;
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function activeSectionEl() {
+    const all = sectionEls();
+    return all[activeIdx] || all[0] || null;
+  }
+
+  function activeSectionMeta() {
+    return sections[activeIdx] || sections[0] || { id: '', title: '', level: 1 };
+  }
+
+  function prefersReducedMotion() {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
   // ---- HTML -> Markdown (lightweight, good enough for paste) ------------
-  // Handles headings, paragraphs, lists, code, blockquote, links, images,
-  // and emphasis. Leaves KaTeX-rendered <span class="katex"> alone by using
-  // its [data-original-text] when we can; falls back to plain text.
   function htmlToMarkdown(rootEl) {
     const out = [];
 
@@ -78,7 +101,6 @@
           return '![' + alt + '](' + src + ')';
         }
         case 'span': {
-          // KaTeX-rendered: try to recover original LaTeX from its annotation.
           if (node.classList && node.classList.contains('katex')) {
             const ann = node.querySelector('annotation[encoding="application/x-tex"]');
             if (ann) {
@@ -101,12 +123,10 @@
         return;
       }
       if (node.nodeType !== 1) return;
-      // Skip the copy button itself.
       if (node.classList && node.classList.contains('copy-section-btn')) return;
       const tag = node.tagName.toLowerCase();
       if (/^h[1-6]$/.test(tag)) {
         const level = parseInt(tag[1], 10);
-        // Strip embedded copy button text from the heading.
         const clone = node.cloneNode(true);
         clone.querySelectorAll('.copy-section-btn').forEach(b => b.remove());
         out.push('\n' + '#'.repeat(level) + ' ' + clone.textContent.trim() + '\n');
@@ -140,7 +160,6 @@
       }
       if (tag === 'hr') { out.push('---\n'); return; }
       if (tag === 'table') {
-        // Crude but functional table -> markdown
         const rows = Array.from(node.querySelectorAll('tr'));
         if (!rows.length) return;
         const toRow = tr => '| ' + Array.from(tr.children).map(c => (c.textContent || '').trim().replace(/\|/g, '\\|')).join(' | ') + ' |';
@@ -154,7 +173,6 @@
         Array.from(node.childNodes).forEach(block);
         return;
       }
-      // Fallback: treat as inline paragraph.
       const t = inline(node).trim();
       if (t) { out.push(t); out.push(''); }
     }
@@ -166,7 +184,7 @@
   // ---- Provenance header for copies -------------------------------------
   function provenance(sectionTitleArg) {
     const lines = [];
-    if (paperTitle) lines.push('> From: "' + paperTitle + '"' + (paperAuthors ? ' — ' + paperAuthors : ''));
+    if (paperTitle) lines.push('> From: "' + paperTitle + '"' + (paperAuthors ? ' - ' + paperAuthors : ''));
     if (sectionTitleArg) lines.push('> Section: ' + sectionTitleArg);
     if (sourceTag) lines.push('> Source: ' + sourceTag);
     return lines.join('\n') + (lines.length ? '\n\n' : '');
@@ -177,7 +195,6 @@
       await navigator.clipboard.writeText(text);
       toast(msg || 'Copied');
     } catch (e) {
-      // Fallback: textarea + execCommand
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.style.position = 'fixed';
@@ -191,17 +208,18 @@
   }
 
   function copyCurrentSection(btn) {
-    const root = document.querySelector('.book-content');
+    const root = activeSectionEl() || document.querySelector('.book-content');
     if (!root) return;
-    const md = htmlToMarkdown(root);
-    const text = provenance(sectionTitle) + md;
+    const meta = activeSectionMeta();
+    const text = provenance(meta.title) + htmlToMarkdown(root);
     copyText(text, 'Section copied for LLM');
     if (btn) {
+      const original = btn.textContent;
       btn.classList.add('copied');
       btn.textContent = 'Copied!';
       setTimeout(() => {
         btn.classList.remove('copied');
-        btn.textContent = '\u{1F4CB} Copy for LLM';
+        btn.textContent = original;
       }, 1400);
     }
   }
@@ -211,57 +229,115 @@
     if (!sel || sel.isCollapsed) return toast('No selection');
     const text = sel.toString();
     const md = '> ' + text.split('\n').map(l => l.trim()).filter(Boolean).join('\n> ');
-    copyText(provenance(sectionTitle) + md + '\n', 'Selection copied');
+    copyText(provenance(activeSectionMeta().title) + md + '\n', 'Selection copied');
   }
 
-  // ---- Hotkey navigation ------------------------------------------------
+  async function copyEntirePaper() {
+    toast('Fetching full paper...');
+    try {
+      const resp = await fetch('/api/' + bookId + '/markdown');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const md = await resp.text();
+      copyText(md, 'Whole paper copied for LLM');
+    } catch (e) {
+      toast('Copy-all failed: ' + e.message);
+    }
+  }
+
+  // ---- Continuous section navigation ------------------------------------
+  function setActive(idx, { scrollToc = false } = {}) {
+    if (idx < 0 || idx >= sections.length) return;
+    activeIdx = idx;
+    const meta = activeSectionMeta();
+    document.querySelectorAll('.toc-link').forEach(a => {
+      a.classList.toggle('active', a.getAttribute('data-section-id') === meta.id);
+    });
+    const label = document.getElementById('active-section-label');
+    if (label) {
+      const level = meta.level > 1 ? ' · H' + meta.level : '';
+      label.textContent = 'Section ' + (idx + 1) + ' of ' + sections.length + level;
+    }
+    const summary = document.querySelector('.toc-summary-current');
+    if (summary) summary.textContent = meta.title;
+    if (scrollToc) {
+      const active = document.querySelector('.toc-link.active');
+      if (active) active.scrollIntoView({ block: 'nearest' });
+    }
+    try {
+      localStorage.setItem('reader3:' + bookId + ':lastSection', meta.id);
+      localStorage.setItem('reader3:' + bookId + ':lastOpened', String(Date.now()));
+    } catch (_) {}
+  }
+
+  function scrollToSection(id, { updateHash = true } = {}) {
+    const target = document.getElementById(id);
+    if (!target) return;
+    activeLockedUntil = Date.now() + 1200;
+    target.scrollIntoView({
+      block: 'start',
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+    });
+    const idx = sections.findIndex(s => s.id === id);
+    if (idx >= 0) setActive(idx, { scrollToc: true });
+    if (updateHash && history.replaceState) {
+      history.replaceState(null, '', '#' + encodeURIComponent(id));
+    }
+  }
+
   function go(idx) {
     if (idx < 0 || idx >= sections.length) return;
-    window.location.href = '/read/' + bookId + '/' + sections[idx].id;
+    scrollToSection(sections[idx].id);
   }
 
-  // ---- Scroll-spy on TOC -------------------------------------------------
-  // A page is one section, but that section's HTML can still contain deeper
-  // headings that have their own TOC entries. Track whichever is nearest the
-  // top of the viewport and move the highlight to it.
-  function setupScrollSpy() {
-    const headings = Array.from(
-      document.querySelectorAll('.book-content h1[id], .book-content h2[id], .book-content h3[id]')
-    );
-    if (headings.length < 2) return;   // nothing to disambiguate
+  let scrollQueued = false;
+  let activeLockedUntil = 0;
+  function updateProgressAndActive() {
+    scrollQueued = false;
+    const root = scrollRoot();
+    const max = Math.max(0, root.scrollHeight - root.clientHeight);
+    const pct = max ? (root.scrollTop / max) * 100 : 0;
+    const fill = document.querySelector('.reading-progress-fill');
+    if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    if (Date.now() < activeLockedUntil) return;
 
-    const tocLinks = new Map();
-    document.querySelectorAll('.toc-link').forEach(a => {
-      const id = a.getAttribute('data-section-id');
-      if (id) tocLinks.set(id, a);
+    const viewportTop = root === document.scrollingElement || root === document.documentElement
+      ? 0
+      : root.getBoundingClientRect().top;
+    let bestIdx = activeIdx;
+    sectionEls().forEach((el, idx) => {
+      const top = el.getBoundingClientRect().top - viewportTop;
+      if (top <= 120) bestIdx = idx;
     });
-    if (!tocLinks.size) return;
+    if (bestIdx !== activeIdx) setActive(bestIdx, { scrollToc: true });
+  }
 
-    const serverActive = tocLinks.get(currentId) || null;
-    let active = serverActive;
+  function queueScrollUpdate() {
+    if (scrollQueued) return;
+    scrollQueued = true;
+    requestAnimationFrame(updateProgressAndActive);
+  }
 
-    function setActive(link) {
-      if (link === active) return;
-      if (active) active.classList.remove('active');
-      active = link;
-      if (active) {
-        active.classList.add('active');
-        active.scrollIntoView({ block: 'nearest' });
-      }
-    }
+  function setupScrollSpy() {
+    const main = document.getElementById('main');
+    if (main) main.addEventListener('scroll', queueScrollUpdate, { passive: true });
+    window.addEventListener('scroll', queueScrollUpdate, { passive: true });
+    window.addEventListener('resize', queueScrollUpdate);
+    queueScrollUpdate();
+  }
 
-    const seen = new Map();
-    const observer = new IntersectionObserver(entries => {
-      entries.forEach(e => seen.set(e.target, e));
-      const visible = Array.from(seen.values())
-        .filter(e => e.isIntersecting)
-        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-      if (!visible.length) return;
-      const link = tocLinks.get(visible[0].target.id);
-      if (link) setActive(link);
-    }, { rootMargin: '-10% 0px -75% 0px', threshold: 0 });
-
-    headings.forEach(h => observer.observe(h));
+  function setupTocLinks() {
+    document.querySelectorAll('.toc-link').forEach(link => {
+      link.addEventListener('click', e => {
+        const id = link.getAttribute('data-section-id');
+        if (!id) return;
+        e.preventDefault();
+        scrollToSection(id);
+        const details = document.getElementById('toc-disclosure');
+        if (details && !window.matchMedia('(min-width: 761px)').matches) {
+          details.open = false;
+        }
+      });
+    });
   }
 
   // ---- Section palette --------------------------------------------------
@@ -277,7 +353,7 @@
     let selectedIdx = 0;
 
     function esc(str) {
-      return str.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+      return String(str).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
     }
 
     function render(query) {
@@ -294,13 +370,12 @@
       ).join('');
       if (more) {
         const hidden = all.length - matches.length;
-        // Silently dropping results makes a long book look shorter than it is.
         if (hidden > 0) {
           more.textContent = hidden + ' more section' + (hidden === 1 ? '' : 's') +
-                             ' — keep typing to narrow';
+                             ' - keep typing to narrow';
           more.hidden = false;
         } else if (!all.length) {
-          more.textContent = 'No section matches “' + query + '”';
+          more.textContent = 'No section matches "' + query + '"';
           more.hidden = false;
         } else {
           more.hidden = true;
@@ -319,7 +394,8 @@
     function pick(i) {
       const item = visibleItems[i];
       if (!item) return;
-      window.location.href = '/read/' + bookId + '/' + item.id;
+      close();
+      scrollToSection(item.id);
     }
 
     input.addEventListener('input', () => render(input.value));
@@ -349,8 +425,8 @@
     results.addEventListener('click', e => {
       const it = e.target.closest('.palette-item');
       if (!it) return;
-      const id = it.getAttribute('data-id');
-      window.location.href = '/read/' + bookId + '/' + id;
+      scrollToSection(it.getAttribute('data-id'));
+      close();
     });
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 
@@ -369,16 +445,12 @@
     const h = document.getElementById('help-modal');
     if (!h) return;
     const close = () => h.classList.remove('show');
-    // Clicking the backdrop (but not the card) dismisses it.
     h.addEventListener('click', e => { if (e.target === h) close(); });
     const btn = h.querySelector('.help-close');
     if (btn) btn.addEventListener('click', close);
   }
 
   // ---- TOC disclosure (mobile) -------------------------------------------
-  // On desktop the CSS keeps the list permanently expanded and hides the
-  // summary. On mobile it starts collapsed so the reading text is the first
-  // thing on screen instead of a clipped table of contents.
   function setupToc() {
     const details = document.getElementById('toc-disclosure');
     if (!details) return;
@@ -403,9 +475,157 @@
       sync();
     });
     sync();
+  }
 
-    const active = details.querySelector('.toc-link.active');
-    if (active && wide.matches) active.scrollIntoView({ block: 'nearest' });
+  // ---- Codex explanation panel ------------------------------------------
+  function setupCodexPanel() {
+    const form = document.getElementById('codex-key-form');
+    const input = document.getElementById('codex-key-input');
+    const clearBtn = document.getElementById('codex-key-clear');
+    const pill = document.getElementById('codex-key-pill');
+    const status = document.getElementById('codex-status');
+    const output = document.getElementById('codex-output');
+    const selectionBox = document.getElementById('codex-selection');
+    if (!form || !input || !pill || !status || !output) return;
+
+    let selectionTimer = null;
+    let explainAbort = null;
+    let requestSeq = 0;
+    let lastText = '';
+
+    function setKeyState(data) {
+      keyConfigured = !!(data && data.configured);
+      keySource = data ? data.source : null;
+      codexModel = data ? data.model : codexModel;
+      pill.textContent = keyConfigured ? (keySource === 'env' ? 'Env key' : 'Session key') : 'No key';
+      pill.classList.toggle('ready', keyConfigured);
+      if (keyConfigured && !output.textContent.trim()) {
+        status.textContent = codexModel ? 'Ready - ' + codexModel : 'Ready';
+      }
+    }
+
+    function setStatus(msg, mode) {
+      status.textContent = msg;
+      status.classList.toggle('is-error', mode === 'error');
+      status.classList.toggle('is-loading', mode === 'loading');
+    }
+
+    function showSelection(text) {
+      if (!selectionBox) return;
+      selectionBox.hidden = false;
+      selectionBox.textContent = text.length > 420 ? text.slice(0, 420).trim() + '...' : text;
+    }
+
+    async function refreshKeyStatus() {
+      try {
+        const resp = await fetch('/api/codex/key-status');
+        if (resp.ok) setKeyState(await resp.json());
+      } catch (_) {}
+    }
+
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const apiKey = input.value.trim();
+      if (!apiKey) {
+        setStatus('API key is required.', 'error');
+        return;
+      }
+      setStatus('Saving key...', 'loading');
+      try {
+        const resp = await fetch('/api/codex/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: apiKey }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Could not save key.');
+        input.value = '';
+        setKeyState(data);
+        setStatus(codexModel ? 'Ready - ' + codexModel : 'Ready');
+      } catch (err) {
+        setStatus(err.message || 'Could not save key.', 'error');
+      }
+    });
+
+    if (clearBtn) {
+      clearBtn.addEventListener('click', async () => {
+        setStatus('Clearing key...', 'loading');
+        try {
+          const resp = await fetch('/api/codex/key', { method: 'DELETE' });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(data.detail || 'Could not clear key.');
+          setKeyState(data);
+          setStatus(data.configured ? 'Ready - ' + data.model : 'No key');
+        } catch (err) {
+          setStatus(err.message || 'Could not clear key.', 'error');
+        }
+      });
+    }
+
+    function selectedTextInPaper() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+      const root = document.querySelector('.book-content');
+      if (!root) return '';
+      let node = sel.getRangeAt(0).commonAncestorContainer;
+      if (node.nodeType === 3) node = node.parentElement;
+      if (!node || !root.contains(node)) return '';
+      return sel.toString().replace(/\s+/g, ' ').trim();
+    }
+
+    async function explain(text) {
+      if (!text || text === lastText) return;
+      lastText = text;
+      showSelection(text);
+      if (!keyConfigured) {
+        output.textContent = '';
+        setStatus('Add a Codex API key first.', 'error');
+        return;
+      }
+
+      if (explainAbort) explainAbort.abort();
+      explainAbort = new AbortController();
+      const seq = ++requestSeq;
+      output.classList.add('dim');
+      setStatus('Explaining...', 'loading');
+      try {
+        const meta = activeSectionMeta();
+        const resp = await fetch('/api/codex/explain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: explainAbort.signal,
+          body: JSON.stringify({
+            text,
+            paper_title: paperTitle,
+            section_title: meta.title,
+            source_tag: sourceTag,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Explanation failed.');
+        if (seq !== requestSeq) return;
+        output.textContent = data.explanation || '';
+        output.classList.remove('dim');
+        setStatus(data.model ? 'Codex - ' + data.model : 'Codex');
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        output.classList.remove('dim');
+        setStatus(err.message || 'Explanation failed.', 'error');
+      }
+    }
+
+    function scheduleExplain() {
+      clearTimeout(selectionTimer);
+      selectionTimer = setTimeout(() => {
+        const text = selectedTextInPaper();
+        if (text) explain(text);
+      }, 500);
+    }
+
+    document.addEventListener('selectionchange', scheduleExplain);
+    document.addEventListener('mouseup', scheduleExplain);
+    document.addEventListener('keyup', scheduleExplain);
+    refreshKeyStatus();
   }
 
   // ---- Keybindings ------------------------------------------------------
@@ -417,7 +637,6 @@
   }
 
   document.addEventListener('keydown', e => {
-    // Always-on Escape closes overlays.
     if (e.key === 'Escape') {
       document.querySelectorAll('.palette-overlay.show, .help-modal.show')
               .forEach(el => el.classList.remove('show'));
@@ -427,8 +646,8 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
     switch (e.key) {
-      case 'j': go(currentIdx + 1); break;
-      case 'k': go(currentIdx - 1); break;
+      case 'j': go(activeIdx + 1); break;
+      case 'k': go(activeIdx - 1); break;
       case 'c': copyCurrentSection(); break;
       case 'C': copyEntirePaper(); break;
       case 'y': copySelection(); break;
@@ -439,36 +658,28 @@
     e.preventDefault();
   });
 
-  // ---- Whole-paper copy -------------------------------------------------
-  async function copyEntirePaper() {
-    toast('Fetching full paper...');
-    try {
-      const resp = await fetch('/api/' + bookId + '/markdown');
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const md = await resp.text();
-      copyText(md, 'Whole paper copied for LLM');
-    } catch (e) {
-      toast('Copy-all failed: ' + e.message);
-    }
-  }
-
   // ---- Wire up ----------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
     renderMath();
     setupPalette();
     setupHelp();
-    setupScrollSpy();
     setupToc();
+    setupTocLinks();
+    setupScrollSpy();
+    setupCodexPanel();
 
-    // Wire the copy button next to the heading.
-    document.querySelectorAll('.copy-section-btn').forEach(btn => {
+    document.querySelectorAll('[data-copy-current]').forEach(btn => {
       btn.addEventListener('click', () => copyCurrentSection(btn));
     });
+    document.querySelectorAll('[data-copy-paper]').forEach(btn => {
+      btn.addEventListener('click', () => copyEntirePaper());
+    });
 
-    // Persist last-section / scroll position for "Continue".
-    try {
-      localStorage.setItem('reader3:' + bookId + ':lastSection', currentId);
-      localStorage.setItem('reader3:' + bookId + ':lastOpened', String(Date.now()));
-    } catch (_) { /* private mode */ }
+    const hash = decodeURIComponent((window.location.hash || '').replace(/^#/, ''));
+    if (hash && document.getElementById(hash)) {
+      setTimeout(() => scrollToSection(hash, { updateHash: false }), 60);
+    } else {
+      setActive(activeIdx, { scrollToc: true });
+    }
   });
 })();

@@ -591,6 +591,17 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     scroll-behavior: smooth;
     background: var(--bg);
 }
+.reader-shell {
+    width: 100%;
+    max-width: 1120px;
+    min-height: 100%;
+    margin: 0 auto;
+    padding: 0 24px 120px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 310px;
+    gap: 28px;
+    align-items: start;
+}
 .content-container {
     max-width: var(--content-width);
     margin: 0 auto;
@@ -598,6 +609,12 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     line-height: var(--content-line);
     font-size: var(--content-size);
     color: var(--fg);
+}
+.continuous-reader .content-container {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 56px 0 0;
 }
 .section-path {
     font-family: var(--ui-font);
@@ -656,6 +673,17 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
 
 /* ----- Book content normalization -------------------------------------- */
 .book-content { font-family: var(--content-font); }
+.reader-section {
+    scroll-margin-top: 64px;
+    padding: 0 0 44px;
+    margin: 0 0 42px;
+    border-bottom: 1px solid var(--border);
+}
+.reader-section:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+.reader-section > :first-child { margin-top: 0; }
 .book-content img {
     max-width: 100%;
     height: auto;
@@ -741,6 +769,131 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     border-color: #88c197;
     background: #e8f5ec;
 }
+.copy-paper-btn {
+    background: var(--bg-soft);
+}
+
+/* ----- Codex explanation panel ----------------------------------------- */
+.codex-panel {
+    position: sticky;
+    top: 22px;
+    padding-top: 56px;
+    font-family: var(--ui-font);
+    min-width: 0;
+}
+.codex-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    padding: 18px;
+    max-height: calc(100vh - 44px);
+    overflow-y: auto;
+}
+.codex-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+.codex-head h2 {
+    margin: 0;
+    font-family: var(--content-font);
+    color: var(--fg);
+    font-size: 1.2em;
+    line-height: 1.2;
+}
+.codex-kicker {
+    color: var(--fg-faint);
+    font-size: 0.68em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+}
+.codex-key-pill {
+    margin-left: auto;
+    white-space: nowrap;
+    color: var(--fg-faint);
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 0.72em;
+}
+.codex-key-pill.ready {
+    color: var(--accent-on-soft);
+    background: var(--accent-soft);
+    border-color: transparent;
+}
+.codex-key-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 7px;
+    margin-bottom: 14px;
+}
+.codex-key-form input {
+    min-width: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 0.84em;
+}
+.codex-key-form input:focus {
+    outline: 2px solid var(--accent-soft);
+    border-color: var(--accent);
+}
+.codex-btn {
+    appearance: none;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--accent-ink);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.82em;
+    font-weight: 500;
+    padding: 8px 10px;
+}
+.codex-btn.secondary {
+    background: var(--card);
+    color: var(--fg-soft);
+    border-color: var(--border-strong);
+}
+.codex-btn:hover { filter: brightness(0.96); }
+.codex-btn.secondary:hover {
+    filter: none;
+    color: var(--fg);
+    background: var(--bg-soft);
+}
+.codex-status {
+    color: var(--fg-faint);
+    font-size: 0.8em;
+    margin: 10px 0;
+}
+.codex-status.is-loading { color: var(--accent-on-soft); }
+.codex-status.is-error { color: #c0533a; }
+.codex-selection {
+    color: var(--fg-soft);
+    background: var(--bg-soft);
+    border-left: 3px solid var(--accent-soft);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    margin: 12px 0;
+    font-family: var(--content-font);
+    font-size: 0.86em;
+    line-height: 1.45;
+}
+.codex-output {
+    white-space: pre-wrap;
+    color: var(--fg);
+    font-size: 0.9em;
+    line-height: 1.55;
+}
+.codex-output.dim { opacity: 0.55; }
 
 /* ----- Footer nav ------------------------------------------------------- */
 .section-nav {
@@ -940,6 +1093,11 @@ kbd {
     .btn-add { flex: 1 1 100%; }
 
     .reader-body { flex-direction: column; height: auto; overflow: visible; }
+    .reader-shell {
+        display: block;
+        max-width: none;
+        padding: 0;
+    }
 
     /* The sidebar previously became a 240px clipped scroll box sitting on top
        of every section. Now it is a compact header plus a collapsed TOC, so
@@ -1006,9 +1164,35 @@ kbd {
         padding: 4px 0 10px;
     }
 
-    .content-container { padding: 26px 20px 72px; }
+    .continuous-reader .content-container,
+    .content-container { padding: 26px 20px 34px; }
     .theme-toggle { top: 10px; right: 10px; }
     .abstract { padding: 15px 17px; margin-bottom: 26px; }
+    .section-path {
+        align-items: stretch;
+        flex-wrap: wrap;
+    }
+    .section-path .spacer { display: none; }
+    .copy-section-btn {
+        flex: 1 1 auto;
+        justify-content: center;
+    }
+    .reader-section {
+        scroll-margin-top: 220px;
+        padding-bottom: 32px;
+        margin-bottom: 32px;
+    }
+    .codex-panel {
+        position: static;
+        padding: 0 18px 60px;
+    }
+    .codex-card {
+        max-height: none;
+        overflow: visible;
+    }
+    .codex-key-form {
+        grid-template-columns: minmax(0, 1fr) auto auto;
+    }
 
     /* "press ? for shortcuts" is meaningless without a keyboard. */
     .nav-hint { display: none; }

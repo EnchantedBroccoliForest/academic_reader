@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ section.title }} — {{ book.metadata.title }}</title>
+    <title>{{ book.metadata.title }} — reader3</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,7 +19,7 @@
     <script defer src="/static/katex/katex.min.js"></script>
     <script defer src="/static/katex/contrib/auto-render.min.js"></script>
 </head>
-<body class="reader-body">
+<body class="reader-body continuous-reader">
 
     <!-- SIDEBAR -->
     <div id="sidebar">
@@ -48,7 +48,7 @@
             <ul class="toc-list">
             {% for item in items %}
                 <li class="toc-item">
-                    <a href="/read/{{ book_id }}/{{ item.section_id }}"
+                    <a href="/read/{{ book_id }}#{{ item.section_id }}"
                        data-section-id="{{ item.section_id }}"
                        data-level="{{ item.level }}"
                        class="toc-link {% if item.section_id == section.id %}active{% endif %}">
@@ -83,45 +83,69 @@
     <!-- MAIN CONTENT -->
     <div id="main">
         <div class="reading-progress" aria-hidden="true">
-            <div class="reading-progress-fill"
-                 style="width: {{ ((section_idx + 1) / section_count * 100) | round(2) }}%;"></div>
+            <div class="reading-progress-fill"></div>
         </div>
-        <div class="content-container">
-            <div class="section-path">
-                <span>Section {{ section_idx + 1 }} of {{ section_count }}{% if section.level > 1 %} · H{{ section.level }}{% endif %}</span>
-                <span class="spacer"></span>
-                <button class="copy-section-btn" type="button"
-                        title="Copy this section as markdown for an LLM (c)">
-                    &#x1F4CB; Copy for LLM
-                </button>
-            </div>
+        <div class="reader-shell">
+            <article class="content-container">
+                <div class="section-path">
+                    <span><span id="active-section-label">Section 1 of {{ section_count }}</span></span>
+                    <span class="spacer"></span>
+                    <button class="copy-section-btn" type="button" data-copy-current
+                            title="Copy the active section as markdown for an LLM (c)">
+                        &#x1F4CB; Copy section
+                    </button>
+                    <button class="copy-section-btn copy-paper-btn" type="button" data-copy-paper
+                            title="Copy the whole paper as markdown for an LLM (shift+c)">
+                        Copy paper
+                    </button>
+                </div>
 
-            {% if abstract %}
-                <aside class="abstract">
-                    <h2 class="abstract-label">Abstract</h2>
-                    <p>{{ abstract }}</p>
-                </aside>
-            {% endif %}
-
-            <div class="book-content">
-                {{ section.html | safe }}
-            </div>
-
-            <div class="section-nav">
-                {% if prev_id %}
-                    <a href="/read/{{ book_id }}/{{ prev_id }}" class="nav-btn">← Previous</a>
-                {% else %}
-                    <span class="nav-btn disabled">← Previous</span>
+                {% if abstract %}
+                    <aside class="abstract">
+                        <h2 class="abstract-label">Abstract</h2>
+                        <p>{{ abstract }}</p>
+                    </aside>
                 {% endif %}
-                <span class="nav-hint">
-                    press <kbd>?</kbd> for shortcuts
-                </span>
-                {% if next_id %}
-                    <a href="/read/{{ book_id }}/{{ next_id }}" class="nav-btn">Next →</a>
-                {% else %}
-                    <span class="nav-btn disabled">Next →</span>
-                {% endif %}
-            </div>
+
+                <div class="book-content continuous-book">
+                    {% for s in book.sections %}
+                        <section class="reader-section"
+                                 id="{{ s.id }}"
+                                 data-section-id="{{ s.id }}"
+                                 data-section-title="{{ s.title }}"
+                                 data-section-index="{{ loop.index0 }}">
+                            {{ s.html | safe }}
+                        </section>
+                    {% endfor %}
+                </div>
+            </article>
+
+            <aside id="codex-panel" class="codex-panel" aria-label="Codex explanation">
+                <div class="codex-card">
+                    <div class="codex-head">
+                        <div>
+                            <div class="codex-kicker">Codex</div>
+                            <h2>Explain</h2>
+                        </div>
+                        <span id="codex-key-pill" class="codex-key-pill">No key</span>
+                    </div>
+
+                    <form id="codex-key-form" class="codex-key-form">
+                        <input id="codex-key-input"
+                               type="password"
+                               placeholder="OpenAI API key"
+                               autocomplete="off"
+                               spellcheck="false"
+                               aria-label="OpenAI API key">
+                        <button type="submit" class="codex-btn">Save</button>
+                        <button type="button" id="codex-key-clear" class="codex-btn secondary">Clear</button>
+                    </form>
+
+                    <div id="codex-selection" class="codex-selection" hidden></div>
+                    <div id="codex-status" class="codex-status">Select text in the paper.</div>
+                    <div id="codex-output" class="codex-output"></div>
+                </div>
+            </aside>
         </div>
     </div>
 
@@ -143,7 +167,7 @@
             </div>
             <table>
                 <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>next / previous section</td></tr>
-                <tr><td><kbd>c</kbd></td><td>copy current section for LLM</td></tr>
+                <tr><td><kbd>c</kbd></td><td>copy active section for LLM</td></tr>
                 <tr><td><kbd>shift</kbd>+<kbd>c</kbd></td><td>copy entire paper for LLM</td></tr>
                 <tr><td><kbd>y</kbd></td><td>copy current selection (with provenance)</td></tr>
                 <tr><td><kbd>g</kbd></td><td>go to section…</td></tr>
@@ -162,6 +186,7 @@
         title: {{ book.metadata.title | tojson }},
         authors: {{ book.metadata.authors | tojson }},
         sourceTag: {{ source_tag | tojson }},
+        codexKey: {{ codex_key | tojson }},
         sections: [
             {%- for s in book.sections -%}
                 {id: {{ s.id | tojson }}, title: {{ s.title | tojson }}, level: {{ s.level }}}{% if not loop.last %},{% endif %}

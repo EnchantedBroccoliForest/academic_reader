@@ -30,6 +30,8 @@ if os.path.isdir(_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 BOOKS_DIR = os.environ.get("READER3_LIBRARY", ".")
+CODEX_MODEL = os.environ.get("READER3_CODEX_MODEL", "gpt-5")
+_session_codex_api_key = ""
 
 # Handlers below are deliberately ``def`` rather than ``async def``: they do
 # blocking disk I/O, unpickling and markdown conversion. Starlette runs sync
@@ -60,6 +62,32 @@ def _section_index(book: Book, section_id: str) -> Optional[int]:
         if sec.id == section_id:
             return i
     return None
+
+
+def _source_tag(book: Book) -> str:
+    if book.metadata.arxiv_id:
+        return f"arXiv:{book.metadata.arxiv_id}"
+    if book.source_file:
+        return book.source_file
+    return ""
+
+
+def _codex_api_key() -> tuple[str, Optional[str]]:
+    if _session_codex_api_key:
+        return _session_codex_api_key, "session"
+    env_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if env_key:
+        return env_key, "env"
+    return "", None
+
+
+def _codex_key_status() -> dict:
+    _key, source = _codex_api_key()
+    return {
+        "configured": bool(source),
+        "source": source,
+        "model": CODEX_MODEL,
+    }
 
 
 def _safe_book_dir(book_id: str) -> str:
@@ -132,27 +160,20 @@ def _added_on(book: Book) -> str:
     return stamp[:10] if len(stamp) >= 10 else ""
 
 
-@app.get("/read/{book_id}")
-def read_book_root(book_id: str):
-    """Redirect to the first section.
-
-    Rendering here instead would leave the browser's base URL at ``/read/``,
-    which breaks the relative ``images/...`` paths the EPUB importer writes.
-    """
+@app.get("/read/{book_id}", response_class=HTMLResponse)
+def read_book_root(request: Request, book_id: str):
+    """Render the whole book as one continuous, section-anchored page."""
     book = load_book_cached(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
     if not book.sections:
         raise HTTPException(status_code=404, detail="Book has no readable sections")
-    return RedirectResponse(
-        url=f"/read/{book_id}/{book.sections[0].id}", status_code=302
-    )
+    return _render_book(request, book, book_id)
 
 
 @app.get("/read/{book_id}/{section_ref}", response_class=HTMLResponse)
 def read_section(request: Request, book_id: str, section_ref: str):
-    """``section_ref`` is a Section.id; back-compat: an integer is treated as
-    a linear index into ``book.sections``."""
+    """Back-compat section URLs redirect to the continuous page anchor."""
     book = load_book_cached(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="Book not found")
@@ -162,44 +183,29 @@ def read_section(request: Request, book_id: str, section_ref: str):
     if section_ref.isdigit():
         idx = int(section_ref)
         if 0 <= idx < len(book.sections):
-            return RedirectResponse(
-                url=f"/read/{book_id}/{book.sections[idx].id}", status_code=302
-            )
+            return RedirectResponse(url=f"/read/{book_id}#{book.sections[idx].id}", status_code=302)
         raise HTTPException(status_code=404, detail="Section not found")
 
     idx = _section_index(book, section_ref)
     if idx is None:
         raise HTTPException(status_code=404, detail=f"Unknown section: {section_ref}")
-    return _render_section(request, book, book_id, idx)
+    return RedirectResponse(url=f"/read/{book_id}#{book.sections[idx].id}", status_code=302)
 
 
-def _render_section(request: Request, book: Book, book_id: str, idx: int):
-    section = book.sections[idx]
-    prev_id = book.sections[idx - 1].id if idx > 0 else None
-    next_id = book.sections[idx + 1].id if idx + 1 < len(book.sections) else None
-
-    if book.metadata.arxiv_id:
-        source_tag = f"arXiv:{book.metadata.arxiv_id}"
-    elif book.source_file:
-        source_tag = book.source_file
-    else:
-        source_tag = ""
-
+def _render_book(request: Request, book: Book, book_id: str):
+    first = book.sections[0]
     return templates.TemplateResponse(
         request,
         "reader.html",
         {
             "book": book,
             "book_id": book_id,
-            "section": section,
-            "section_idx": idx,
+            "section": first,
+            "section_idx": 0,
             "section_count": len(book.sections),
-            "prev_id": prev_id,
-            "next_id": next_id,
-            "source_tag": source_tag,
-            # The abstract belongs to the paper, not to any one section, so it
-            # rides along with the first section only.
-            "abstract": book.metadata.abstract if idx == 0 else None,
+            "source_tag": _source_tag(book),
+            "abstract": book.metadata.abstract,
+            "codex_key": _codex_key_status(),
         },
     )
 
@@ -254,6 +260,140 @@ def book_markdown(book_id: str):
         parts.append("\n" + _section_markdown(sec).strip() + "\n")
 
     return "\n".join(parts)
+
+
+def _response_text(data: dict) -> str:
+    """Extract text from the Responses API shape, with fallback traversal."""
+    direct = data.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    parts = []
+    for item in data.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) or []:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text") or content.get("output_text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+    return "\n\n".join(parts).strip()
+
+
+def _openai_error_detail(resp) -> str:
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {}
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return f"OpenAI request failed with HTTP {resp.status_code}."
+
+
+@app.get("/api/codex/key-status")
+def codex_key_status():
+    return JSONResponse(_codex_key_status())
+
+
+@app.post("/api/codex/key")
+async def save_codex_key(request: Request):
+    global _session_codex_api_key
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    key = str(payload.get("api_key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API key is required.")
+    _session_codex_api_key = key
+    return JSONResponse(_codex_key_status())
+
+
+@app.delete("/api/codex/key")
+def clear_codex_key():
+    global _session_codex_api_key
+    _session_codex_api_key = ""
+    return JSONResponse(_codex_key_status())
+
+
+@app.post("/api/codex/explain")
+async def explain_selection(request: Request):
+    api_key, _source = _codex_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Add a Codex API key first.")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    text = " ".join(str(payload.get("text") or "").split())
+    if not text:
+        raise HTTPException(status_code=400, detail="Select text to explain.")
+    if len(text) > 12000:
+        raise HTTPException(status_code=413, detail="Select a shorter passage.")
+
+    paper_title = str(payload.get("paper_title") or "").strip()
+    section_title = str(payload.get("section_title") or "").strip()
+    source_tag = str(payload.get("source_tag") or "").strip()
+
+    prompt_parts = []
+    if paper_title:
+        prompt_parts.append(f"Paper or book: {paper_title}")
+    if section_title:
+        prompt_parts.append(f"Section: {section_title}")
+    if source_tag:
+        prompt_parts.append(f"Source: {source_tag}")
+    prompt_parts.append("Highlighted passage:")
+    prompt_parts.append(text)
+    prompt_parts.append(
+        "Explain this passage for an attentive academic reader. "
+        "Be concise, define important terms, preserve equations, and call out "
+        "the author's core move without inventing facts outside the passage."
+    )
+
+    body = {
+        "model": CODEX_MODEL,
+        "instructions": (
+            "You are Codex, a precise academic reading companion. "
+            "Explain highlighted text in plain language while respecting the "
+            "source passage. Prefer short paragraphs or tight bullets."
+        ),
+        "input": "\n\n".join(prompt_parts),
+        "max_output_tokens": 700,
+    }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach OpenAI: {exc}")
+
+    if resp.status_code >= 400:
+        status = resp.status_code if resp.status_code in (400, 401, 403, 429) else 502
+        raise HTTPException(status_code=status, detail=_openai_error_detail(resp))
+
+    try:
+        data = resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="OpenAI returned an unreadable response.")
+
+    explanation = _response_text(data)
+    if not explanation:
+        raise HTTPException(status_code=502, detail="OpenAI returned no explanation text.")
+    return JSONResponse({"explanation": explanation, "model": CODEX_MODEL})
 
 
 _UPLOAD_SLUG_RE = re.compile(r"[^a-zA-Z0-9._-]+")
@@ -343,8 +483,7 @@ async def upload_document(file: UploadFile = File(...)):
             )
 
         book_id = os.path.basename(out_dir)
-        first_id = book.sections[0].id if book.sections else ""
-        url = f"/read/{book_id}/{first_id}" if first_id else f"/read/{book_id}"
+        url = f"/read/{book_id}"
         return JSONResponse({
             "book_id": book_id,
             "title": book.metadata.title,
@@ -390,5 +529,6 @@ def favicon():
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting server at http://0.0.0.0:5000")
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    host = os.environ.get("READER3_HOST", "127.0.0.1")
+    print(f"Starting server at http://{host}:5000")
+    uvicorn.run(app, host=host, port=5000)
