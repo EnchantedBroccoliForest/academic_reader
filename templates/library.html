@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>reader3 — Library</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet"
@@ -28,41 +29,53 @@
             </div>
         </header>
 
-        {% if books %}
-            <div class="library-search">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2"
+        <div class="library-tools">
+            {% if books %}
+                <div class="library-search">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="11" cy="11" r="7"></circle>
+                        <path d="m21 21-4.3-4.3"></path>
+                    </svg>
+                    <input id="library-filter" type="text"
+                           placeholder="Filter by title or author..."
+                           aria-label="Filter library"
+                           autocomplete="off">
+                </div>
+            {% endif %}
+            <button type="button" id="add-btn" class="btn btn-add">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.2"
                      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="11" cy="11" r="7"></circle>
-                    <path d="m21 21-4.3-4.3"></path>
+                    <path d="M12 5v14"></path><path d="M5 12h14"></path>
                 </svg>
-                <input id="library-filter" type="text"
-                       placeholder="Filter by title or author..."
-                       aria-label="Filter library"
-                       autocomplete="off">
-            </div>
-        {% endif %}
+                Add document
+            </button>
+            <input type="file" id="file-input" accept=".pdf,.epub,application/pdf,application/epub+zip"
+                   multiple hidden>
+        </div>
 
         {% if not books %}
             <div class="empty">
                 <h2>Your library is empty</h2>
-                <p>Drag a PDF anywhere on this page to import it, or use the CLI for other formats. Each item is split into sections you can read and copy as Markdown for an LLM.</p>
+                <p>Use <b>Add document</b> above (or drag a file anywhere on this page) to import a PDF or EPUB. For arXiv papers and web articles, use the CLI. Each item is split into sections you can read and copy as Markdown for an LLM.</p>
                 <div class="cmd-list">
-                    <div class="cmd">
-                        <span class="cmd-label">PDF</span>
-                        <span>python import.py path/to/paper.pdf</span>
-                    </div>
                     <div class="cmd">
                         <span class="cmd-label">arXiv</span>
                         <span>python import.py arxiv:1706.03762</span>
                     </div>
                     <div class="cmd">
-                        <span class="cmd-label">EPUB</span>
-                        <span>python import.py path/to/book.epub</span>
-                    </div>
-                    <div class="cmd">
                         <span class="cmd-label">URL</span>
                         <span>python import.py https://example.com/article</span>
+                    </div>
+                    <div class="cmd">
+                        <span class="cmd-label">PDF</span>
+                        <span>python import.py path/to/paper.pdf</span>
+                    </div>
+                    <div class="cmd">
+                        <span class="cmd-label">EPUB</span>
+                        <span>python import.py path/to/book.epub</span>
                     </div>
                 </div>
             </div>
@@ -72,10 +85,28 @@
             {% for book in books %}
             <article class="book-card"
                      data-book-id="{{ book.id }}"
+                     data-title="{{ book.title }}"
                      data-search="{{ (book.title ~ ' ' ~ (book.author or '')) | lower }}">
-                <h2 class="book-title">{{ book.title }}</h2>
+                <div class="book-card-head">
+                    <h2 class="book-title">{{ book.title }}</h2>
+                    <button type="button" class="book-delete" data-delete-for="{{ book.id }}"
+                            title="Remove from library"
+                            aria-label="Remove {{ book.title }} from library">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M3 6h18"></path>
+                            <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"></path>
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                        </svg>
+                    </button>
+                </div>
                 {% if book.author %}
                     <div class="book-author">{{ book.author }}</div>
+                {% endif %}
+
+                {% if book.abstract %}
+                    <p class="book-snippet">{{ book.abstract }}</p>
                 {% endif %}
 
                 <div class="book-tags">
@@ -87,6 +118,9 @@
                         </span>
                     {% endif %}
                     <span class="book-tag">{{ book.sections }} section{% if book.sections != 1 %}s{% endif %}</span>
+                    {% if book.added %}
+                        <span class="book-tag">Added {{ book.added }}</span>
+                    {% endif %}
                 </div>
 
                 <div class="book-meta-row" data-last-opened-for="{{ book.id }}"></div>
@@ -99,13 +133,13 @@
                     {% endif %}
                     <a href="#" class="btn secondary"
                        data-continue-for="{{ book.id }}"
-                       style="display:none;">Continue</a>
+                       hidden>Continue</a>
                 </div>
             </article>
             {% endfor %}
         </div>
 
-        <div id="no-results" class="no-results" style="display:none;">
+        <div id="no-results" class="no-results" hidden>
             No books match your filter.
         </div>
     </div>
@@ -122,184 +156,16 @@
                     <polyline points="9 16 12 13 15 16"></polyline>
                 </svg>
             </div>
-            <div class="drop-title">Drop PDF to import</div>
-            <div class="drop-sub">Release to add it to your library</div>
+            <div class="drop-title">Drop to import</div>
+            <div class="drop-sub">PDF or EPUB — release to add it to your library</div>
         </div>
     </div>
 
-    <div id="upload-status" class="upload-status" style="display:none;">
+    <div id="upload-status" class="upload-status" hidden>
         <div class="upload-bar"><div class="upload-bar-fill"></div></div>
         <div class="upload-msg">Uploading…</div>
     </div>
 
-    <script>
-      // ---- "Continue" + last-opened from localStorage (no DB) ----
-      function fmtAgo(ts) {
-        const diff = Date.now() - ts;
-        const mins = Math.floor(diff / 60000);
-        if (mins < 1) return 'just now';
-        if (mins < 60) return mins + 'm ago';
-        const hrs = Math.floor(mins / 60);
-        if (hrs < 24) return hrs + 'h ago';
-        const days = Math.floor(hrs / 24);
-        if (days < 30) return days + 'd ago';
-        const months = Math.floor(days / 30);
-        return months + 'mo ago';
-      }
-      document.querySelectorAll('.book-card').forEach(card => {
-        const id = card.getAttribute('data-book-id');
-        let lastSec = null, lastOpened = 0;
-        try {
-          lastSec = localStorage.getItem('reader3:' + id + ':lastSection');
-          lastOpened = parseInt(localStorage.getItem('reader3:' + id + ':lastOpened') || '0', 10);
-        } catch (_) {}
-        const lastEl = card.querySelector('[data-last-opened-for="' + id + '"]');
-        if (lastEl && lastOpened) lastEl.textContent = 'Last opened ' + fmtAgo(lastOpened);
-        const cont = card.querySelector('[data-continue-for="' + id + '"]');
-        if (cont && lastSec) {
-          cont.href = '/read/' + id + '/' + lastSec;
-          cont.style.display = '';
-        }
-      });
-
-      // ---- Live filter ----
-      const filterInput = document.getElementById('library-filter');
-      const noResults = document.getElementById('no-results');
-      if (filterInput) {
-        filterInput.addEventListener('input', () => {
-          const q = filterInput.value.toLowerCase().trim();
-          let visible = 0;
-          document.querySelectorAll('.book-card').forEach(card => {
-            const hay = card.getAttribute('data-search') || '';
-            const match = !q || hay.includes(q);
-            card.classList.toggle('is-hidden', !match);
-            if (match) visible++;
-          });
-          if (noResults) noResults.style.display = visible === 0 ? '' : 'none';
-        });
-      }
-
-      // ---- Drag & drop PDF upload ----
-      const overlay = document.getElementById('drop-overlay');
-      const status = document.getElementById('upload-status');
-      const statusMsg = status.querySelector('.upload-msg');
-      const barFill = status.querySelector('.upload-bar-fill');
-      let dragDepth = 0;
-
-      function hasFiles(e) {
-        if (!e.dataTransfer) return false;
-        const types = e.dataTransfer.types;
-        if (!types) return false;
-        for (let i = 0; i < types.length; i++) {
-          if (types[i] === 'Files') return true;
-        }
-        return false;
-      }
-
-      function showStatus(msg, { progress = null, error = false, success = false } = {}) {
-        status.style.display = '';
-        status.classList.toggle('is-error', !!error);
-        status.classList.toggle('is-success', !!success);
-        statusMsg.textContent = msg;
-        if (progress === null) {
-          barFill.style.width = '0%';
-          status.classList.add('is-indeterminate');
-        } else {
-          status.classList.remove('is-indeterminate');
-          barFill.style.width = Math.max(0, Math.min(100, progress)) + '%';
-        }
-      }
-      function hideStatusSoon(delay) {
-        setTimeout(() => {
-          status.style.display = 'none';
-          status.classList.remove('is-error', 'is-success', 'is-indeterminate');
-          barFill.style.width = '0%';
-        }, delay);
-      }
-
-      function uploadPdf(file) {
-        return new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', '/api/upload');
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              const pct = (e.loaded / e.total) * 100;
-              if (pct < 100) {
-                showStatus(`Uploading ${file.name}… ${Math.round(pct)}%`, { progress: pct });
-              } else {
-                showStatus(`Processing ${file.name}…`, { progress: null });
-              }
-            }
-          };
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try { resolve(JSON.parse(xhr.responseText)); }
-              catch (e) { reject(new Error('Bad server response')); }
-            } else {
-              let detail = `Upload failed (${xhr.status})`;
-              try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (_) {}
-              reject(new Error(detail));
-            }
-          };
-          xhr.onerror = () => reject(new Error('Network error'));
-          const fd = new FormData();
-          fd.append('file', file);
-          xhr.send(fd);
-        });
-      }
-
-      async function handleFiles(fileList) {
-        const files = Array.from(fileList || []);
-        const pdfs = files.filter(f => /\.pdf$/i.test(f.name));
-        if (!pdfs.length) {
-          if (files.length) {
-            showStatus('Only PDF files are supported.', { error: true, progress: 0 });
-            hideStatusSoon(3000);
-          }
-          return;
-        }
-        for (let i = 0; i < pdfs.length; i++) {
-          const file = pdfs[i];
-          const prefix = pdfs.length > 1 ? `(${i + 1}/${pdfs.length}) ` : '';
-          try {
-            showStatus(prefix + `Uploading ${file.name}…`, { progress: 0 });
-            const result = await uploadPdf(file);
-            showStatus(prefix + `Imported "${result.title}"`, { progress: 100, success: true });
-            if (i === pdfs.length - 1) {
-              setTimeout(() => { window.location.reload(); }, 600);
-              return;
-            }
-          } catch (err) {
-            showStatus(prefix + (err.message || 'Upload failed'), { error: true, progress: 0 });
-            hideStatusSoon(4000);
-            return;
-          }
-        }
-      }
-
-      window.addEventListener('dragenter', (e) => {
-        if (!hasFiles(e)) return;
-        e.preventDefault();
-        dragDepth++;
-        overlay.classList.add('show');
-      });
-      window.addEventListener('dragover', (e) => {
-        if (!hasFiles(e)) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'copy';
-      });
-      window.addEventListener('dragleave', (e) => {
-        if (!hasFiles(e)) return;
-        dragDepth = Math.max(0, dragDepth - 1);
-        if (dragDepth === 0) overlay.classList.remove('show');
-      });
-      window.addEventListener('drop', (e) => {
-        if (!hasFiles(e)) return;
-        e.preventDefault();
-        dragDepth = 0;
-        overlay.classList.remove('show');
-        handleFiles(e.dataTransfer.files);
-      });
-    </script>
+    <script src="/static/library.js"></script>
 </body>
 </html>

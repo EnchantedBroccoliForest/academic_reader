@@ -58,7 +58,6 @@
   function htmlToMarkdown(rootEl) {
     const out = [];
 
-    function escape(s) { return s.replace(/([\\`*_{}\[\]()#+\-.!])/g, '\\$1'); }
     function inline(node) {
       if (node.nodeType === 3) return node.nodeValue;
       if (node.nodeType !== 1) return '';
@@ -222,26 +221,47 @@
   }
 
   // ---- Scroll-spy on TOC -------------------------------------------------
+  // A page is one section, but that section's HTML can still contain deeper
+  // headings that have their own TOC entries. Track whichever is nearest the
+  // top of the viewport and move the highlight to it.
   function setupScrollSpy() {
-    const headings = document.querySelectorAll('.book-content h1, .book-content h2, .book-content h3');
-    if (!headings.length) return;
+    const headings = Array.from(
+      document.querySelectorAll('.book-content h1[id], .book-content h2[id], .book-content h3[id]')
+    );
+    if (headings.length < 2) return;   // nothing to disambiguate
+
     const tocLinks = new Map();
     document.querySelectorAll('.toc-link').forEach(a => {
       const id = a.getAttribute('data-section-id');
       if (id) tocLinks.set(id, a);
     });
+    if (!tocLinks.size) return;
 
+    const serverActive = tocLinks.get(currentId) || null;
+    let active = serverActive;
+
+    function setActive(link) {
+      if (link === active) return;
+      if (active) active.classList.remove('active');
+      active = link;
+      if (active) {
+        active.classList.add('active');
+        active.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    const seen = new Map();
     const observer = new IntersectionObserver(entries => {
-      // Use the topmost intersecting heading.
-      const visible = entries.filter(e => e.isIntersecting)
-                             .sort((a, b) => a.target.offsetTop - b.target.offsetTop);
+      entries.forEach(e => seen.set(e.target, e));
+      const visible = Array.from(seen.values())
+        .filter(e => e.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
       if (!visible.length) return;
-      const id = visible[0].target.id;
-      // Only mutate the active link inside the *current* page; the active
-      // section in the TOC for this page is already set by the server.
+      const link = tocLinks.get(visible[0].target.id);
+      if (link) setActive(link);
     }, { rootMargin: '-10% 0px -75% 0px', threshold: 0 });
 
-    headings.forEach(h => { if (h.id) observer.observe(h); });
+    headings.forEach(h => observer.observe(h));
   }
 
   // ---- Section palette --------------------------------------------------
@@ -249,24 +269,43 @@
     const overlay = document.getElementById('palette-overlay');
     const input = document.getElementById('palette-input');
     const results = document.getElementById('palette-results');
+    const more = document.getElementById('palette-more');
     if (!overlay || !input || !results) return;
 
+    const MAX_SHOWN = 80;
     let visibleItems = [];
     let selectedIdx = 0;
 
+    function esc(str) {
+      return str.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+    }
+
     function render(query) {
       const q = (query || '').toLowerCase().trim();
-      const matches = sections.filter(s =>
-        !q || s.title.toLowerCase().includes(q)
-      ).slice(0, 80);
+      const all = sections.filter(s => !q || s.title.toLowerCase().includes(q));
+      const matches = all.slice(0, MAX_SHOWN);
       visibleItems = matches;
       selectedIdx = 0;
       results.innerHTML = matches.map((s, i) =>
-        '<div class="palette-item' + (i === 0 ? ' selected' : '') + '" data-id="' + s.id + '">' +
+        '<div class="palette-item' + (i === 0 ? ' selected' : '') + '" data-id="' + esc(s.id) + '">' +
         '<span class="lvl">H' + s.level + '</span>' +
-        s.title.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) +
+        esc(s.title) +
         '</div>'
       ).join('');
+      if (more) {
+        const hidden = all.length - matches.length;
+        // Silently dropping results makes a long book look shorter than it is.
+        if (hidden > 0) {
+          more.textContent = hidden + ' more section' + (hidden === 1 ? '' : 's') +
+                             ' — keep typing to narrow';
+          more.hidden = false;
+        } else if (!all.length) {
+          more.textContent = 'No section matches “' + query + '”';
+          more.hidden = false;
+        } else {
+          more.hidden = true;
+        }
+      }
     }
 
     function open() {
@@ -326,6 +365,49 @@
     h.classList.toggle('show');
   }
 
+  function setupHelp() {
+    const h = document.getElementById('help-modal');
+    if (!h) return;
+    const close = () => h.classList.remove('show');
+    // Clicking the backdrop (but not the card) dismisses it.
+    h.addEventListener('click', e => { if (e.target === h) close(); });
+    const btn = h.querySelector('.help-close');
+    if (btn) btn.addEventListener('click', close);
+  }
+
+  // ---- TOC disclosure (mobile) -------------------------------------------
+  // On desktop the CSS keeps the list permanently expanded and hides the
+  // summary. On mobile it starts collapsed so the reading text is the first
+  // thing on screen instead of a clipped table of contents.
+  function setupToc() {
+    const details = document.getElementById('toc-disclosure');
+    if (!details) return;
+    const wide = window.matchMedia('(min-width: 761px)');
+
+    function sync() {
+      if (wide.matches) {
+        details.open = true;
+      } else if (!details.dataset.userToggled) {
+        details.open = false;
+      }
+    }
+    details.addEventListener('toggle', () => {
+      if (!wide.matches) details.dataset.userToggled = '1';
+      if (details.open) {
+        const active = details.querySelector('.toc-link.active');
+        if (active) active.scrollIntoView({ block: 'nearest' });
+      }
+    });
+    wide.addEventListener('change', () => {
+      delete details.dataset.userToggled;
+      sync();
+    });
+    sync();
+
+    const active = details.querySelector('.toc-link.active');
+    if (active && wide.matches) active.scrollIntoView({ block: 'nearest' });
+  }
+
   // ---- Keybindings ------------------------------------------------------
   function isTyping() {
     const a = document.activeElement;
@@ -374,7 +456,9 @@
   document.addEventListener('DOMContentLoaded', () => {
     renderMath();
     setupPalette();
+    setupHelp();
     setupScrollSpy();
+    setupToc();
 
     // Wire the copy button next to the heading.
     document.querySelectorAll('.copy-section-btn').forEach(btn => {

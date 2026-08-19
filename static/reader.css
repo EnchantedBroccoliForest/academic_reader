@@ -11,10 +11,12 @@
     --card:       #ffffff;
     --fg:         #2d2a26;
     --fg-soft:    #5a544c;
-    --fg-faint:   #948c80;
-    --accent:     #b06a3b;
+    --fg-faint:   #6f6759;
+    --accent:     #a25f31;
+    --accent-ink: #ffffff;
     --accent-soft:#f3dfcb;
-    --link:       #3a6ea5;
+    --accent-on-soft: #7d451f;
+    --link:       #2f6096;
     --border:     #ece6da;
     --border-strong: #ddd5c4;
     --selection:  #fff0b3;
@@ -37,10 +39,12 @@
     --card:       #fbf3df;
     --fg:         #3a2f23;
     --fg-soft:    #5b4a36;
-    --fg-faint:   #8a7a63;
-    --accent:     #8c4f1f;
+    --fg-faint:   #6d5e48;
+    --accent:     #82491c;
+    --accent-ink: #ffffff;
     --accent-soft:#e9d3b0;
-    --link:       #4a6da0;
+    --accent-on-soft: #6b3a13;
+    --link:       #3c5c8c;
     --border:     #ddcfb0;
     --border-strong: #ccba94;
     --shadow-sm:  0 1px 2px rgba(80, 55, 25, 0.05), 0 1px 3px rgba(80, 55, 25, 0.06);
@@ -53,9 +57,11 @@
     --card:       #22252b;
     --fg:         #e6e3dc;
     --fg-soft:    #b8b3a8;
-    --fg-faint:   #7e7a72;
+    --fg-faint:   #9a948a;
     --accent:     #e29b67;
+    --accent-ink: #241405;
     --accent-soft:#3d2c1f;
+    --accent-on-soft: #f0b98d;
     --link:       #88b8e8;
     --border:     #2c3038;
     --border-strong: #3a3f48;
@@ -171,6 +177,13 @@ button:focus-visible,
     font-size: 0.95em;
 }
 
+.library-tools {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    margin: 24px 0 28px;
+    flex-wrap: wrap;
+}
 .library-search {
     display: flex;
     align-items: center;
@@ -179,10 +192,12 @@ button:focus-visible,
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
     padding: 10px 16px;
-    margin: 24px 0 28px;
     box-shadow: var(--shadow-sm);
     transition: border-color 0.15s, box-shadow 0.15s;
+    flex: 1 1 260px;
+    min-width: 0;
 }
+
 .library-search:focus-within {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-soft);
@@ -222,6 +237,51 @@ button:focus-visible,
 }
 .book-card.is-hidden { display: none; }
 
+.book-card-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+.book-card-head .book-title { flex: 1; min-width: 0; }
+.book-delete {
+    flex-shrink: 0;
+    appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    padding: 4px;
+    cursor: pointer;
+    line-height: 0;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s, border-color 0.15s;
+}
+.book-card:hover .book-delete,
+.book-delete:focus-visible { opacity: 1; }
+.book-delete:hover {
+    color: #b23c28;
+    background: var(--bg-soft);
+    border-color: var(--border-strong);
+}
+.book-delete:disabled { opacity: .4; cursor: default; }
+/* Touch devices have no hover, so the control must always be visible. */
+@media (hover: none) {
+    .book-delete { opacity: 1; }
+}
+
+.book-snippet {
+    color: var(--fg-soft);
+    font-family: var(--content-font);
+    font-size: 0.92em;
+    line-height: 1.5;
+    margin: 0 0 12px;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
 .book-title {
     font-family: var(--content-font);
     font-size: 1.15em;
@@ -255,7 +315,7 @@ button:focus-visible,
     border: 1px solid var(--border);
     font-family: var(--ui-font);
 }
-.book-tag.is-arxiv { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.book-tag.is-arxiv { color: var(--accent-on-soft); background: var(--accent-soft); border-color: transparent; }
 .book-tag a { color: inherit; text-decoration: none; }
 .book-tag a:hover { text-decoration: underline; }
 
@@ -276,7 +336,7 @@ button:focus-visible,
     justify-content: center;
     gap: 6px;
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     text-decoration: none;
     padding: 8px 16px;
     border-radius: var(--radius-sm);
@@ -297,6 +357,13 @@ button:focus-visible,
 }
 .btn.secondary:hover { background: var(--bg-soft); color: var(--fg); filter: none; }
 .btn.disabled { opacity: 0.45; pointer-events: none; }
+.btn.btn-add {
+    flex: 0 0 auto;
+    padding: 10px 18px;
+    white-space: nowrap;
+    cursor: pointer;
+    font-size: 0.9em;
+}
 
 .empty {
     background: var(--card);
@@ -485,6 +552,11 @@ button:focus-visible,
 .book-meta-h a { color: var(--link); text-decoration: none; }
 .book-meta-h a:hover { text-decoration: underline; }
 
+/* The <details> wrapper only behaves like a disclosure on narrow screens;
+   on desktop the summary is hidden and the list is always shown. */
+.toc-disclosure > .toc-scroll { display: block; }
+.toc-summary { display: none; }
+
 ul.toc-list {
     list-style: none;
     padding-left: 0;
@@ -503,7 +575,7 @@ a.toc-link {
 }
 a.toc-link:hover { background: var(--bg-strong); color: var(--fg); }
 a.toc-link.active {
-    color: var(--accent);
+    color: var(--accent-on-soft);
     font-weight: 600;
     background: var(--accent-soft);
 }
@@ -541,6 +613,46 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     border-bottom: 1px solid var(--border);
 }
 .section-path .spacer { flex: 1; }
+
+/* ----- Abstract --------------------------------------------------------- */
+.abstract {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 18px 22px;
+    margin: 0 0 34px;
+}
+.abstract-label {
+    font-family: var(--ui-font);
+    font-size: 0.7em;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent-on-soft);
+    margin: 0 0 8px;
+}
+.abstract p {
+    margin: 0;
+    font-size: 0.94em;
+    line-height: 1.62;
+    color: var(--fg-soft);
+}
+
+/* ----- Reading progress ------------------------------------------------- */
+.reading-progress {
+    position: sticky;
+    top: 0;
+    left: 0;
+    height: 2px;
+    background: var(--border);
+    z-index: 5;
+}
+.reading-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.25s ease;
+}
 
 /* ----- Book content normalization -------------------------------------- */
 .book-content { font-family: var(--content-font); }
@@ -620,7 +732,7 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     gap: 5px;
 }
 .copy-section-btn:hover {
-    color: var(--accent);
+    color: var(--accent-on-soft);
     border-color: var(--accent);
     background: var(--accent-soft);
 }
@@ -654,7 +766,7 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     box-shadow: var(--shadow-sm);
 }
 .nav-btn:hover {
-    color: var(--accent);
+    color: var(--accent-on-soft);
     border-color: var(--accent);
     background: var(--accent-soft);
 }
@@ -731,6 +843,13 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
 }
 .palette-item.selected,
 .palette-item:hover { background: var(--bg-soft); color: var(--fg); }
+.palette-more {
+    padding: 9px 20px;
+    font-size: 0.8em;
+    color: var(--fg-soft);
+    background: var(--bg-soft);
+    border-top: 1px solid var(--border);
+}
 .palette-item .lvl {
     display: inline-block;
     width: 28px;
@@ -759,6 +878,31 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     width: min(440px, 90vw);
     box-shadow: var(--shadow-md);
 }
+.help-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+.help-head h2 { flex: 1; margin: 0 !important; }
+.help-close {
+    appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    font-size: 1.4em;
+    line-height: 1;
+    width: 28px;
+    height: 28px;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.help-close:hover {
+    color: var(--fg);
+    background: var(--bg-soft);
+    border-color: var(--border-strong);
+}
 .help-modal h2 {
     margin: 0 0 18px;
     font-size: 1.1em;
@@ -766,7 +910,7 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     font-family: var(--content-font);
     font-weight: 600;
 }
-.help-modal kbd {
+kbd {
     display: inline-block;
     border: 1px solid var(--border-strong);
     border-bottom-width: 2px;
@@ -779,6 +923,7 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
     min-width: 18px;
     text-align: center;
 }
+.nav-hint kbd { font-size: 0.8em; padding: 0 5px; }
 .help-modal table { border-collapse: collapse; width: 100%; }
 .help-modal td { padding: 6px 0; font-size: 0.9em; color: var(--fg-soft); }
 .help-modal td:first-child { width: 110px; white-space: nowrap; }
@@ -791,14 +936,91 @@ a.toc-link[data-level="3"] { padding-left: 36px; font-size: 0.83em; opacity: 0.8
 @media (max-width: 760px) {
     .library-body { padding: 32px 18px 60px; }
     .library-brand h1 { font-size: 1.7em; }
+    .library-tools { margin: 20px 0 22px; }
+    .btn-add { flex: 1 1 100%; }
+
     .reader-body { flex-direction: column; height: auto; overflow: visible; }
+
+    /* The sidebar previously became a 240px clipped scroll box sitting on top
+       of every section. Now it is a compact header plus a collapsed TOC, so
+       the reading text starts near the top of the screen. */
     #sidebar {
         width: 100%;
         height: auto;
-        max-height: 240px;
+        max-height: none;
+        overflow: visible;
         border-right: none;
         border-bottom: 1px solid var(--border);
+        padding: 14px 18px 12px;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: var(--bg-soft);
     }
-    .content-container { padding: 32px 22px 80px; }
+    .nav-home { margin-bottom: 10px; }
+    .book-title-h { font-size: 1em; margin-bottom: 4px; }
+    .book-meta-h {
+        margin-bottom: 0;
+        padding-bottom: 12px;
+        font-size: 0.78em;
+    }
+    /* Leave room for the fixed theme toggle in the top-right. */
+    .nav-home, .book-title-h, .book-meta-h { padding-right: 116px; }
+
+    .toc-summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        list-style: none;
+        cursor: pointer;
+        padding: 9px 2px 9px 0;
+        margin-top: 10px;
+        border-top: 1px solid var(--border);
+        font-size: 0.85em;
+        color: var(--fg-soft);
+        user-select: none;
+    }
+    .toc-summary::-webkit-details-marker { display: none; }
+    .toc-summary-label {
+        font-size: 0.82em;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--fg-faint);
+        flex-shrink: 0;
+    }
+    .toc-summary-current {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--fg);
+        font-weight: 500;
+    }
+    .toc-chevron { flex-shrink: 0; transition: transform 0.18s ease; }
+    .toc-disclosure[open] .toc-chevron { transform: rotate(180deg); }
+    .toc-disclosure > .toc-scroll {
+        max-height: 52vh;
+        overflow-y: auto;
+        padding: 4px 0 10px;
+    }
+
+    .content-container { padding: 26px 20px 72px; }
     .theme-toggle { top: 10px; right: 10px; }
+    .abstract { padding: 15px 17px; margin-bottom: 26px; }
+
+    /* "press ? for shortcuts" is meaningless without a keyboard. */
+    .nav-hint { display: none; }
+    .section-nav { gap: 10px; }
+    .nav-btn { padding: 10px 14px; font-size: 0.85em; white-space: nowrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
 }

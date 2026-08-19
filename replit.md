@@ -7,7 +7,7 @@ A self-hosted web reader for academic papers and EPUBs, optimized for LLM-assist
 ## Architecture
 
 - **Backend**: FastAPI + Uvicorn (`server.py`) — serves library and per-section reader pages
-- **Frontend**: Plain ES2020 JavaScript + CSS (no build step), Jinja2 templates, KaTeX via CDN for math rendering
+- **Frontend**: Plain ES2020 JavaScript + CSS (no build step), Jinja2 templates, KaTeX vendored in `static/katex/` for offline math rendering
 - **Package manager**: Python `pip` (dependencies listed in `pyproject.toml`)
 
 ## Key Files
@@ -17,7 +17,7 @@ A self-hosted web reader for academic papers and EPUBs, optimized for LLM-assist
 - `reader3.py` — Core data model, HTML cleaning, section splitting, pickle I/O
 - `importers/` — Import modules for EPUB, PDF, arXiv, and HTML URLs
 - `templates/` — Jinja2 HTML templates (`library.html`, `reader.html`)
-- `static/` — CSS and JavaScript assets
+- `static/` — CSS and JavaScript assets, plus vendored KaTeX
 
 ## Running Locally
 
@@ -31,7 +31,7 @@ Server runs at `http://0.0.0.0:5000`.
 
 ## Importing Books
 
-Use the CLI to import content:
+Drag a PDF or EPUB onto the library page, or press **Add document**. For arXiv IDs and URLs, use the CLI:
 
 ```bash
 python import.py path/to/paper.pdf

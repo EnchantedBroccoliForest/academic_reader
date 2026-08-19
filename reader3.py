@@ -14,7 +14,6 @@ import pickle
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup, Comment
@@ -52,24 +51,6 @@ class TOCEntry:
 
 
 @dataclass
-class Reference:
-    id: str
-    text: str
-    arxiv_id: Optional[str] = None
-    doi: Optional[str] = None
-    url: Optional[str] = None
-
-
-@dataclass
-class Figure:
-    id: str
-    number: str
-    caption: str
-    src: Optional[str]
-    section_id: str
-
-
-@dataclass
 class BookMetadata:
     title: str
     language: str = "en"
@@ -101,9 +82,6 @@ class Book:
     sections: List[Section] = field(default_factory=list)
     toc: List[TOCEntry] = field(default_factory=list)
     images: Dict[str, str] = field(default_factory=dict)
-    references: Dict[str, Reference] = field(default_factory=dict)
-    figures: List[Figure] = field(default_factory=list)
-    tables: List[Figure] = field(default_factory=list)
     source_file: str = ""
     processed_at: str = ""
     version: str = "4.0"
@@ -121,14 +99,68 @@ class Book:
 # ---------------------------------------------------------------------------
 
 
+# Tags that never carry document content and can execute or embed things.
+# <svg> is in here because it can carry onload= and a nested <script>, and no
+# importer currently emits inline SVG worth preserving. MathML <math> stays.
+_DROP_TAGS = (
+    'script', 'style', 'iframe', 'video', 'nav', 'form', 'button', 'input',
+    'object', 'embed', 'applet', 'frame', 'frameset', 'link', 'meta', 'base',
+    'svg',
+)
+
+# Only these URL schemes may appear in href/src/etc. Relative URLs (no scheme)
+# are allowed -- that is how EPUB images resolve.
+_SAFE_SCHEMES = ('http', 'https', 'mailto', 'data')
+_URL_ATTRS = ('href', 'src', 'srcset', 'action', 'formaction', 'poster',
+              'background', 'xlink:href', 'data')
+_SCHEME_RE = re.compile(r'^\s*([a-zA-Z][a-zA-Z0-9+.\-]*)\s*:')
+# data: URLs are only safe for images, never for documents or scripts.
+_SAFE_DATA_RE = re.compile(r'^\s*data:image/(png|jpe?g|gif|webp|bmp)[;,]', re.I)
+
+
+def _is_safe_url(value: str) -> bool:
+    """Reject javascript:, vbscript:, non-image data: and friends.
+
+    Anything without a scheme is a relative URL and is left alone.
+    """
+    if not value:
+        return True
+    m = _SCHEME_RE.match(value.replace('\x00', ''))
+    if not m:
+        return True  # relative
+    scheme = m.group(1).lower()
+    if scheme == 'data':
+        return bool(_SAFE_DATA_RE.match(value))
+    return scheme in _SAFE_SCHEMES
+
+
 def clean_html_content(soup: BeautifulSoup) -> BeautifulSoup:
-    """Strip dangerous/useless tags. Leaves <math> intact for KaTeX/MathML."""
-    for tag in soup(['script', 'style', 'iframe', 'video', 'nav', 'form', 'button']):
+    """Strip anything executable out of imported markup.
+
+    Imported documents are rendered with ``| safe``, so this is the only thing
+    standing between an arXiv page / scraped URL / PDF and script execution on
+    the reader's origin. Leaves <math> intact for KaTeX/MathML.
+    """
+    for tag in soup(list(_DROP_TAGS)):
         tag.decompose()
+
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
-    for tag in soup.find_all('input'):
-        tag.decompose()
+
+    for tag in soup.find_all(True):
+        for attr in list(tag.attrs):
+            lower = attr.lower()
+            # on* handlers: onclick, onerror, onload, ...
+            if lower.startswith('on'):
+                del tag[attr]
+                continue
+            if lower in _URL_ATTRS:
+                value = tag[attr]
+                if isinstance(value, (list, tuple)):
+                    value = ' '.join(value)
+                if not _is_safe_url(str(value)):
+                    del tag[attr]
+
     return soup
 
 
@@ -212,7 +244,6 @@ def split_html_into_sections(
     has_seen_heading = False
 
     def flush():
-        nonlocal current_id
         html_parts = [str(elem) for elem in current_buffer]
         section_html = "".join(html_parts).strip()
         if not section_html:
@@ -344,9 +375,6 @@ def migrate_book(book) -> "Book":
         images=getattr(book, "__dict__", {}).get("images") or {},
         source_file=getattr(book, "__dict__", {}).get("source_file", ""),
         processed_at=getattr(book, "__dict__", {}).get("processed_at", ""),
-        references=getattr(book, "__dict__", {}).get("references") or {},
-        figures=getattr(book, "__dict__", {}).get("figures") or [],
-        tables=getattr(book, "__dict__", {}).get("tables") or [],
         version="4.0",
     )
     return new_book
